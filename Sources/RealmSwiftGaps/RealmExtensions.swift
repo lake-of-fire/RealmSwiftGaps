@@ -1,6 +1,26 @@
 import SwiftUI
 import RealmSwift
 
+// From https://www.mongodb.com/docs/realm/sdk/swift/crud/threading/#std-label-ios-async-write
+public extension Realm {
+    func writeAsync<T: ThreadConfined>(_ passedObject: T, errorHandler: @escaping ((_ error: Swift.Error) -> Void) = { _ in return }, block: @escaping ((Realm, T?) -> Void)) {
+        let objectReference = ThreadSafeReference(to: passedObject)
+        let configuration = self.configuration
+        DispatchQueue(label: "background", autoreleaseFrequency: .workItem).async {
+            do {
+                let realm = try Realm(configuration: configuration)
+                try realm.write {
+                    // Resolve within the transaction to ensure you get the latest changes from other threads
+                    let object = realm.resolve(objectReference)
+                    block(realm, object)
+                }
+            } catch {
+                errorHandler(error)
+            }
+        }
+    }
+}
+
 /// Forked from:
 /// https://github.com/realm/realm-swift/blob/9f7a605dfcf6a60e019a296dc8d91c3b23837a82/RealmSwift/SwiftUI.swift
 /// and https://github.com/realm/realm-swift/issues/4818
