@@ -3,9 +3,9 @@ import Combine
 import RealmSwift
 
 @available(macOS 13.0, iOS 16.0, *)
-public struct RealmTextField<ObjectType>: View where ObjectType: RealmSwift.Object & Identifiable {
+public struct RealmCSVTextField<ObjectType>: View where ObjectType: RealmSwift.Object & Identifiable {
     @ObservedRealmObject var object: ObjectType
-    @Binding var objectValue: String
+    @Binding var objectValue: RealmSwift.List<String>
     
     @State var realtimeValue = ""
     @State var publisher = PassthroughSubject<String, Never>()
@@ -20,7 +20,7 @@ public struct RealmTextField<ObjectType>: View where ObjectType: RealmSwift.Obje
             .disableAutocorrection(true)
             .task {
                 Task { @MainActor in
-                    realtimeValue = objectValue
+                    realtimeValue = objectValue.joined(separator: ",")
                 }
             }
             .onChange(of: realtimeValue) { value in
@@ -32,8 +32,10 @@ public struct RealmTextField<ObjectType>: View where ObjectType: RealmSwift.Obje
                     scheduler: DispatchQueue.main
                 )
             ) { value in
-                if objectValue != value {
-                    objectValue = value
+                if objectValue.joined(separator: ",") != value {
+                    let values = value.split(separator: ",").map { String($0) }
+                    objectValue.removeAll()
+                    objectValue.append(objectsIn: values)
                     if let valueChanged = valueChanged {
                         valueChanged(value)
                     }
@@ -41,7 +43,7 @@ public struct RealmTextField<ObjectType>: View where ObjectType: RealmSwift.Obje
             }
     }
     
-    public init(_ title: String, object: ObjectType, objectValue: Binding<String>) {
+    public init(_ title: String, object: ObjectType, objectValue: Binding<RealmSwift.List<String>>) {
         self.object = object
         _objectValue = objectValue
         self.label = title
