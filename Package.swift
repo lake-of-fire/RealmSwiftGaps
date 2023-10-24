@@ -12,14 +12,14 @@ let package = Package(
             targets: ["RealmSwiftGaps"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/realm/realm-swift.git", from: "10.28.1"),
+        .package(url: "https://github.com/RomanEsin/RealmBinary.git", branch: "release/v10.43.1"),
     ],
     targets: [
         .target(
             name: "RealmSwiftGaps",
             dependencies: [
-                .product(name: "Realm", package: "realm-swift"),
-                .product(name: "RealmSwift", package: "realm-swift"),
+                .product(name: "Realm", package: "RealmBinary"),
+                .product(name: "RealmSwift", package: "RealmBinary"),
             ]),
 //        .testTarget(
 //            name: "RealmSwiftGapsTests",
