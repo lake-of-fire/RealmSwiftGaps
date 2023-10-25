@@ -12,7 +12,7 @@ let package = Package(
             targets: ["RealmSwiftGaps"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/lake-of-fire/RealmBinary", branch: "main"),
+        .package(url: "https://github.com/lake-of-fire/RealmBinary.git", branch: "main"),
     ],
     targets: [
         .target(
