@@ -25,7 +25,7 @@ public extension Realm {
     static func asyncWrite<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration? = nil, block: @escaping ((Realm, T) -> Void)) async throws {
         let objectReference = ThreadSafeReference(to: passedObject)
         let configuration = passedObject.realm?.configuration ?? configuration
-        Task { @RealmBackgroundActor in
+        try await Task { @RealmBackgroundActor in
 //        DispatchQueue(label: "background", autoreleaseFrequency: .workItem).async {
             do {
                 let realm = try await configuration == nil ? Realm(actor: RealmBackgroundActor.shared) : Realm(configuration: configuration!, actor: RealmBackgroundActor.shared)
@@ -37,7 +37,7 @@ public extension Realm {
                     }
                 }
             }
-        }
+        }.value
     }
 }
 
