@@ -22,20 +22,19 @@ public extension Realm {
 }
 
 public extension Realm {
-    func asyncWrite<T: ThreadConfined>(_ passedObject: T) async {
-        
+    static func asyncWrite<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration? = nil, block: @escaping ((Realm, T?) -> Void)) async throws {
         let objectReference = ThreadSafeReference(to: passedObject)
-        let configuration = self.configuration
-        DispatchQueue(label: "background", autoreleaseFrequency: .workItem).async {
+        let configuration = passedObject.realm?.configuration ?? configuration
+        Task { @RealmBackgroundActor in
+//        DispatchQueue(label: "background", autoreleaseFrequency: .workItem).async {
             do {
-                let realm = try Realm(configuration: configuration)
-                try realm.write {
+                let realm = try await configuration == nil ? Realm(actor: RealmBackgroundActor.shared) : Realm(configuration: configuration!, actor: RealmBackgroundActor.shared)
+//                try realm.write {
+                try await realm.asyncWrite {
                     // Resolve within the transaction to ensure you get the latest changes from other threads
                     let object = realm.resolve(objectReference)
                     block(realm, object)
                 }
-            } catch {
-                errorHandler(error)
             }
         }
     }
