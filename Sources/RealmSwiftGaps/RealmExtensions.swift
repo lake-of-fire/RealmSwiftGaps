@@ -22,6 +22,7 @@ public extension Realm {
 }
 
 public extension Realm {
+    @MainActor
     static func asyncWrite<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration? = nil, block: @escaping ((Realm, T) -> Void)) async throws {
         let objectReference = ThreadSafeReference(to: passedObject)
         let configuration = passedObject.realm?.configuration ?? configuration
