@@ -22,9 +22,7 @@ public extension Realm {
 }
 
 public extension Realm {
-    static func asyncWrite<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration? = nil, block: @escaping ((Realm, T) -> Void)) async throws {
-        let objectReference = ThreadSafeReference(to: passedObject)
-        let configuration = passedObject.realm?.configuration ?? configuration
+    static func asyncWrite<T: ThreadConfined>(_ passedObject: ThreadSafeReference<T>, configuration: Realm.Configuration? = nil, block: @escaping ((Realm, T) -> Void)) async throws {
         try await Task { @RealmBackgroundActor in
 //        DispatchQueue(label: "background", autoreleaseFrequency: .workItem).async {
             do {
@@ -32,7 +30,7 @@ public extension Realm {
 //                try realm.write {
                 try await realm.asyncWrite {
                     // Resolve within the transaction to ensure you get the latest changes from other threads
-                    if let object = realm.resolve(objectReference) {
+                    if let object = realm.resolve(passedObject) {
                         block(realm, object)
                     }
                 }
