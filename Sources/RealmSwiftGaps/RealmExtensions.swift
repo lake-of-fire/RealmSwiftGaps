@@ -1,25 +1,25 @@
 import SwiftUI
 import RealmSwift
 
-// From https://www.mongodb.com/docs/realm/sdk/swift/crud/threading/#std-label-ios-async-write
-public extension Realm {
-    func writeAsync<T: ThreadConfined>(_ passedObject: T, errorHandler: @escaping ((_ error: Swift.Error) -> Void) = { _ in return }, block: @escaping ((Realm, T?) -> Void)) {
-        let objectReference = ThreadSafeReference(to: passedObject)
-        let configuration = self.configuration
-        DispatchQueue(label: "background", autoreleaseFrequency: .workItem).async {
-            do {
-                let realm = try Realm(configuration: configuration)
-                try realm.write {
-                    // Resolve within the transaction to ensure you get the latest changes from other threads
-                    let object = realm.resolve(objectReference)
-                    block(realm, object)
-                }
-            } catch {
-                errorHandler(error)
-            }
-        }
-    }
-}
+//// From https://www.mongodb.com/docs/realm/sdk/swift/crud/threading/#std-label-ios-async-write
+//public extension Realm {
+//    func writeAsync<T: ThreadConfined>(_ passedObject: T, errorHandler: @escaping ((_ error: Swift.Error) -> Void) = { _ in return }, block: @escaping ((Realm, T?) -> Void)) {
+//        let objectReference = ThreadSafeReference(to: passedObject)
+//        let configuration = self.configuration
+//        DispatchQueue(label: "background", autoreleaseFrequency: .workItem).async {
+//            do {
+//                let realm = try Realm(configuration: configuration)
+//                try realm.write {
+//                    // Resolve within the transaction to ensure you get the latest changes from other threads
+//                    let object = realm.resolve(objectReference)
+//                    block(realm, object)
+//                }
+//            } catch {
+//                errorHandler(error)
+//            }
+//        }
+//    }
+//}
 
 public extension Realm {
     static func asyncWrite<T: ThreadConfined>(_ passedObject: ThreadSafeReference<T>, configuration: Realm.Configuration? = nil, block: @escaping ((Realm, T) -> Void)) async throws {
@@ -39,46 +39,46 @@ public extension Realm {
     }
 }
 
-/// Forked from:
-/// https://github.com/realm/realm-swift/blob/9f7a605dfcf6a60e019a296dc8d91c3b23837a82/RealmSwift/SwiftUI.swift
-/// and https://github.com/realm/realm-swift/issues/4818
-public func safeWrite<Value>(_ value: Value, configuration: Realm.Configuration? = nil, _ block: (Realm?, Value) -> Void) where Value: ThreadConfined {
-    let thawed = !value.isFrozen ? value : value.thaw() ?? value
-    var realm = thawed.realm
-    if realm?.isFrozen ?? false {
-        realm = realm?.thaw()
-    }
-    if realm == nil, let configuration = configuration {
-        realm = try! Realm(configuration: configuration)
-    }
-    if let realm = realm {
-        if realm.isInWriteTransaction {
-            block(realm, thawed)
-        } else {
-            try! realm.write {
-                block(realm, thawed)
-            }
-            // Needed to avoid err "Cannot register notifcaiton block from within write tranasaction"
-            // See @Brandon's comment: https://github.com/realm/realm-swift/issues/4818
-//            realm.refresh()
-        }
-    } else {
-        block(nil, thawed)
-    }
-}
-
-public func safeWrite(configuration: Realm.Configuration = Realm.Configuration.defaultConfiguration, _ block: (Realm) -> Void) {
-    let realm = try! Realm(configuration: configuration)
-    if realm.isInWriteTransaction {
-        block(realm)
-    } else {
-        try! realm.write {
-            block(realm)
-        }
-        // Needed to avoid err "Cannot register notifcaiton block from within write tranasaction"
-        // See @Brandon's comment: https://github.com/realm/realm-swift/issues/4818
-//        realm.refresh()
-    }
+///// Forked from:
+///// https://github.com/realm/realm-swift/blob/9f7a605dfcf6a60e019a296dc8d91c3b23837a82/RealmSwift/SwiftUI.swift
+///// and https://github.com/realm/realm-swift/issues/4818
+//public func safeWrite<Value>(_ value: Value, configuration: Realm.Configuration? = nil, _ block: (Realm?, Value) -> Void) where Value: ThreadConfined {
+//    let thawed = !value.isFrozen ? value : value.thaw() ?? value
+//    var realm = thawed.realm
+//    if realm?.isFrozen ?? false {
+//        realm = realm?.thaw()
+//    }
+//    if realm == nil, let configuration = configuration {
+//        realm = try! Realm(configuration: configuration)
+//    }
+//    if let realm = realm {
+//        if realm.isInWriteTransaction {
+//            block(realm, thawed)
+//        } else {
+//            try! realm.write {
+//                block(realm, thawed)
+//            }
+//            // Needed to avoid err "Cannot register notifcaiton block from within write tranasaction"
+//            // See @Brandon's comment: https://github.com/realm/realm-swift/issues/4818
+////            realm.refresh()
+//        }
+//    } else {
+//        block(nil, thawed)
+//    }
+//}
+//
+//public func safeWrite(configuration: Realm.Configuration = Realm.Configuration.defaultConfiguration, _ block: (Realm) -> Void) {
+//    let realm = try! Realm(configuration: configuration)
+//    if realm.isInWriteTransaction {
+//        block(realm)
+//    } else {
+//        try! realm.write {
+//            block(realm)
+//        }
+//        // Needed to avoid err "Cannot register notifcaiton block from within write tranasaction"
+//        // See @Brandon's comment: https://github.com/realm/realm-swift/issues/4818
+////        realm.refresh()
+//    }
 }
 
 extension URL: FailableCustomPersistable {
