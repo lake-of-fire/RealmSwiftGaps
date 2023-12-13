@@ -21,6 +21,7 @@ import RealmSwift
 //    }
 //}
 
+
 public extension Realm {
     static func asyncWrite<T: ThreadConfined>(_ passedObject: ThreadSafeReference<T>, configuration: Realm.Configuration? = nil, block: @escaping ((Realm, T) -> Void)) async throws {
         try await Task { @RealmBackgroundActor in
@@ -122,61 +123,61 @@ public extension Object {
     }
 }
 
-public extension Results where Element: Object & Decodable {
-    func replace<O>(with objects: [O]) throws where O: Encodable {
-        let encodedObjects = try objects.map { try JSONEncoder().encode($0) }
-        let realmObjects = try encodedObjects.map { try JSONDecoder().decode(Element.self, from: $0) }
-        
-        safeWrite(self) { realm, results in
-            guard let realm = realm else {
-                print("No realm?")
-                return
-            }
-            
-            realm.add(realmObjects, update: .modified)
-            let addedPKs = Set(realmObjects.compactMap { $0.primaryKeyValue })
-            
-            for existingObject in self {
-                guard let existingPK = existingObject.primaryKeyValue else { continue }
-                if !addedPKs.contains(existingPK) {
-                    if existingObject.objectSchema.properties.contains(where: { $0.name == "isDeleted" }) {
-                        existingObject.setValue(true, forKey: "isDeleted")
-                    } else {
-                        realm.delete(existingObject)
-                    }
-                }
-            }
-        }
-    }
-}
-
-public extension BoundCollection where Value == Results<Element>, Element: Object & Decodable {
-    func replace<O>(with objects: [O]) throws where O: Encodable {
-        let encodedObjects = try objects.map { try JSONEncoder().encode($0) }
-        let realmObjects = try encodedObjects.map { try JSONDecoder().decode(Element.self, from: $0) }
-        
-        safeWrite(wrappedValue) { realm, results in
-            guard let realm = realm else {
-                print("No realm?")
-                return
-            }
-            
-            realm.add(realmObjects, update: .modified)
-            let addedPKs = Set(realmObjects.compactMap { $0.primaryKeyValue })
-            
-            for existingObject in self.wrappedValue {
-                guard let existingPK = existingObject.primaryKeyValue else { continue }
-                if !addedPKs.contains(existingPK) {
-                    if existingObject.objectSchema.properties.contains(where: { $0.name == "isDeleted" }) {
-                        existingObject.setValue(true, forKey: "isDeleted")
-                    } else {
-                        remove(existingObject)
-                    }
-                }
-            }
-        }
-    }
-}
+//public extension Results where Element: Object & Decodable {
+//    func replace<O>(with objects: [O]) throws where O: Encodable {
+//        let encodedObjects = try objects.map { try JSONEncoder().encode($0) }
+//        let realmObjects = try encodedObjects.map { try JSONDecoder().decode(Element.self, from: $0) }
+//        
+//        safeWrite(self) { realm, results in
+//            guard let realm = realm else {
+//                print("No realm?")
+//                return
+//            }
+//            
+//            realm.add(realmObjects, update: .modified)
+//            let addedPKs = Set(realmObjects.compactMap { $0.primaryKeyValue })
+//            
+//            for existingObject in self {
+//                guard let existingPK = existingObject.primaryKeyValue else { continue }
+//                if !addedPKs.contains(existingPK) {
+//                    if existingObject.objectSchema.properties.contains(where: { $0.name == "isDeleted" }) {
+//                        existingObject.setValue(true, forKey: "isDeleted")
+//                    } else {
+//                        realm.delete(existingObject)
+//                    }
+//                }
+//            }
+//        }
+//    }
+//}
+//
+//public extension BoundCollection where Value == Results<Element>, Element: Object & Decodable {
+//    func replace<O>(with objects: [O]) throws where O: Encodable {
+//        let encodedObjects = try objects.map { try JSONEncoder().encode($0) }
+//        let realmObjects = try encodedObjects.map { try JSONDecoder().decode(Element.self, from: $0) }
+//        
+//        safeWrite(wrappedValue) { realm, results in
+//            guard let realm = realm else {
+//                print("No realm?")
+//                return
+//            }
+//            
+//            realm.add(realmObjects, update: .modified)
+//            let addedPKs = Set(realmObjects.compactMap { $0.primaryKeyValue })
+//            
+//            for existingObject in self.wrappedValue {
+//                guard let existingPK = existingObject.primaryKeyValue else { continue }
+//                if !addedPKs.contains(existingPK) {
+//                    if existingObject.objectSchema.properties.contains(where: { $0.name == "isDeleted" }) {
+//                        existingObject.setValue(true, forKey: "isDeleted")
+//                    } else {
+//                        remove(existingObject)
+//                    }
+//                }
+//            }
+//        }
+//    }
+//}
 
 /// See: https://github.com/realm/realm-swift/issues/7889
 @propertyWrapper
