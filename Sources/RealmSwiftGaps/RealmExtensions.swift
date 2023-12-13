@@ -79,7 +79,7 @@ public extension Realm {
 //        // See @Brandon's comment: https://github.com/realm/realm-swift/issues/4818
 ////        realm.refresh()
 //    }
-}
+//}
 
 extension URL: FailableCustomPersistable {
     public typealias PersistedType = String
