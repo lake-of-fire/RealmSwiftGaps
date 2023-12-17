@@ -38,7 +38,7 @@ public extension Realm {
         }
     }
     
-    static func writeAsync(_ configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) {
+    static func writeAsync(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) {
         Task.detached { @RealmBackgroundActor in
             do {
                 let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
@@ -49,7 +49,7 @@ public extension Realm {
         }
     }
     
-    static func asyncWrite(_ configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) async throws {
+    static func asyncWrite(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) async throws {
         try await Task { @RealmBackgroundActor in
             do {
                 let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
