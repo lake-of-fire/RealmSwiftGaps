@@ -23,23 +23,38 @@ import RealmSwift
 
 
 public extension Realm {
-    static func writeAsync(_ configuration: Realm.Configuration? = nil, block: @escaping ((Realm) -> Void)) {
+    static func writeAsync<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) {
+        let ref = ThreadSafeReference(to: passedObject)
         Task.detached { @RealmBackgroundActor in
             do {
-                let realm = try await configuration == nil ? Realm(actor: RealmBackgroundActor.shared) : Realm(configuration: configuration!, actor: RealmBackgroundActor.shared)
+                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
                 try await realm.asyncWrite {
-                        block(realm)
+                    // Resolve within the transaction to ensure you get the latest changes from other threads
+                    if let object = realm.resolve(ref) {
+                        block(realm, object)
+                    }
                 }
             }
         }
     }
     
-    static func asyncWrite(configuration: Realm.Configuration? = nil, block: @escaping ((Realm) -> Void)) async throws {
+    static func writeAsync(_ configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) {
+        Task.detached { @RealmBackgroundActor in
+            do {
+                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+                try await realm.asyncWrite {
+                    block(realm)
+                }
+            }
+        }
+    }
+    
+    static func asyncWrite(_ configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) async throws {
         try await Task { @RealmBackgroundActor in
             do {
-                let realm = try await configuration == nil ? Realm(actor: RealmBackgroundActor.shared) : Realm(configuration: configuration!, actor: RealmBackgroundActor.shared)
+                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
                 try await realm.asyncWrite {
-                        block(realm)
+                    block(realm)
                 }
             }
         }.value
