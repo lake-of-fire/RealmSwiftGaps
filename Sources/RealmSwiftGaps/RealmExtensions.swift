@@ -50,7 +50,7 @@ public extension Realm {
     }
     
     static func asyncWrite(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) async throws {
-        try await Task { @RealmBackgroundActor in
+        try await Task.detached { @RealmBackgroundActor in
             do {
                 let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
                 try await realm.asyncWrite {
@@ -60,13 +60,27 @@ public extension Realm {
         }.value
     }
     
-    static func asyncWrite<T: ThreadConfined>(_ passedObject: ThreadSafeReference<T>, configuration: Realm.Configuration? = nil, block: @escaping ((Realm, T) -> Void)) async throws {
-        try await Task { @RealmBackgroundActor in
+    static func asyncWrite<T: ThreadConfined>(_ passedObject: ThreadSafeReference<T>, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) async throws {
+        try await Task.detached { @RealmBackgroundActor in
             do {
-                let realm = try await configuration == nil ? Realm(actor: RealmBackgroundActor.shared) : Realm(configuration: configuration!, actor: RealmBackgroundActor.shared)
+                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
                 try await realm.asyncWrite {
                     // Resolve within the transaction to ensure you get the latest changes from other threads
                     if let object = realm.resolve(passedObject) {
+                        block(realm, object)
+                    }
+                }
+            }
+        }.value
+    }
+    
+    static func asyncWrite<T: ThreadConfined>(_ passedObjects: [ThreadSafeReference<T>], configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) async throws {
+        try await Task.detached { @RealmBackgroundActor in
+            do {
+                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+                try await realm.asyncWrite {
+                    // Resolve within the transaction to ensure you get the latest changes from other threads
+                    for object in passedObjects.compactMap({ realm.resolve($0) }) {
                         block(realm, object)
                     }
                 }
