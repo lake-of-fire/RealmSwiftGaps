@@ -134,12 +134,18 @@ public extension Realm {
 extension URL: FailableCustomPersistable {
     public typealias PersistedType = String
     
+    static let aboutBlankURL = URL(string: "about:blank")!
+    
     public init?(persistedValue: String) {
-        if persistedValue.isEmpty || URL(string: persistedValue) == nil {
-            self.init(string: "about:blank")
-        } else {
-            self.init(string: persistedValue)
+        guard !persistedValue.isEmpty else {
+            self = Self.aboutBlankURL
+            return
         }
+        guard let url = URL(string: persistedValue) else {
+            self = Self.aboutBlankURL
+            return
+        }
+        self = url
     }
     
     public var persistableValue: String {
