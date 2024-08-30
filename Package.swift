@@ -9,6 +9,7 @@ let package = Package(
     products: [
         .library(
             name: "RealmSwiftGaps",
+            type: .dynamic,
             targets: ["RealmSwiftGaps"]),
     ],
     dependencies: [

@@ -22,6 +22,13 @@ public actor RealmBackgroundActor {
         }
     }
     
+    public func write(configuration: Realm.Configuration, operation: @escaping (Realm) throws -> Void) async throws {
+        let realm = try await Realm(configuration: configuration, actor: self)
+        try await realm.asyncWrite {
+            try operation(realm)
+        }
+    }
+    
     public func write<T: ThreadConfined>(_ reference: ThreadSafeReference<T>, configuration: Realm.Configuration, operation: @escaping (T) throws -> Void) async throws {
         let realm = try await Realm(configuration: configuration, actor: self)
         guard let resolvedObject = realm.resolve(reference) else { throw RealmBackgroundActorError.unableToResolveObject }
