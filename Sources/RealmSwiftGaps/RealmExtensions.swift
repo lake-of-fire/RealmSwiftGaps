@@ -25,9 +25,9 @@ import RealmSwift
 public extension Realm {
     static func writeAsync<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) {
         let ref = ThreadSafeReference(to: passedObject)
-        Task.detached { @RealmBackgroundActor in
+        Task { @RealmBackgroundActor in
             do {
-                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: configuration) else { return }
                 try await realm.asyncWrite {
                     // Resolve within the transaction to ensure you get the latest changes from other threads
                     if let object = realm.resolve(ref) {
@@ -39,9 +39,9 @@ public extension Realm {
     }
     
     static func writeAsync(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) {
-        Task.detached { @RealmBackgroundActor in
+        Task { @RealmBackgroundActor in
             do {
-                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: configuration) else { return }
                 try await realm.asyncWrite {
                     block(realm)
                 }
@@ -50,9 +50,9 @@ public extension Realm {
     }
     
     static func asyncWrite(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) async throws {
-        try await Task.detached { @RealmBackgroundActor in
+        try await Task { @RealmBackgroundActor in
             do {
-                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: configuration) else { return }
                 try await realm.asyncWrite {
                     block(realm)
                 }
@@ -61,9 +61,9 @@ public extension Realm {
     }
     
     static func asyncWrite<T: ThreadConfined>(_ passedObject: ThreadSafeReference<T>, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) async throws {
-        try await Task.detached { @RealmBackgroundActor in
+        try await Task { @RealmBackgroundActor in
             do {
-                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: configuration) else { return }
                 try await realm.asyncWrite {
                     // Resolve within the transaction to ensure you get the latest changes from other threads
                     if let object = realm.resolve(passedObject) {
@@ -75,9 +75,9 @@ public extension Realm {
     }
     
     static func asyncWrite<T: ThreadConfined>(_ passedObjects: [ThreadSafeReference<T>], configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) async throws {
-        try await Task.detached { @RealmBackgroundActor in
+        try await Task { @RealmBackgroundActor in
             do {
-                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: configuration) else { return }
                 try await realm.asyncWrite {
                     // Resolve within the transaction to ensure you get the latest changes from other threads
                     for object in passedObjects.compactMap({ realm.resolve($0) }) {
@@ -234,37 +234,37 @@ public extension Object {
 //    }
 //}
 
-/// See: https://github.com/realm/realm-swift/issues/7889
-@propertyWrapper
-public struct ObservedRealmCollection<Collection>: DynamicProperty where Collection: RealmCollection {
-    final private class Storage: ObservableObject {
-        var objects: Collection
-        var notificationToken: NotificationToken?
-
-        init(_ objects: Collection) {
-            self.objects = objects
-            self.notificationToken = objects.thaw()?.observe { changes in
-                switch changes {
-                case .initial:
-                    break;
-                case .update(let results, _, _, _):
-                    self.objects = results.freeze()
-                    self.objectWillChange.send()
-                case .error(let error):
-                    print(error.localizedDescription)
-                }
-            }
-        }
-    }
-    
-    @StateObject private var storage: Storage
-
-    public var wrappedValue: Collection { storage.objects }
-    
-    public init(wrappedValue: Collection) {
-        self._storage = .init(wrappedValue: Storage(wrappedValue))
-    }
-}
+///// See: https://github.com/realm/realm-swift/issues/7889
+//@propertyWrapper
+//public struct ObservedRealmCollection<Collection>: DynamicProperty where Collection: RealmCollection {
+//    final private class Storage: ObservableObject {
+//        var objects: Collection
+//        var notificationToken: NotificationToken?
+//
+//        init(_ objects: Collection) {
+//            self.objects = objects
+//            self.notificationToken = objects.thaw()?.observe { changes in
+//                switch changes {
+//                case .initial:
+//                    break;
+//                case .update(let results, _, _, _):
+//                    self.objects = results.freeze()
+//                    self.objectWillChange.send()
+//                case .error(let error):
+//                    print(error.localizedDescription)
+//                }
+//            }
+//        }
+//    }
+//    
+//    @StateObject private var storage: Storage
+//
+//    public var wrappedValue: Collection { storage.objects }
+//    
+//    public init(wrappedValue: Collection) {
+//        self._storage = .init(wrappedValue: Storage(wrappedValue))
+//    }
+//}
 
 //public extension BoundCollection where Value == Results<Element>, Element: ObjectBase & ThreadConfined {
 /*@available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
