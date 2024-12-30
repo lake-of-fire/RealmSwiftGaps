@@ -13,16 +13,15 @@ let package = Package(
             targets: ["RealmSwiftGaps"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/lake-of-fire/RealmBinary.git", branch: "main"),
-//                .package(url: "https://github.com/realm/realm-swift.git", from: "10.53.0"),
+//        .package(url: "https://github.com/lake-of-fire/RealmBinary.git", branch: "main"),
+                .package(url: "https://github.com/realm/realm-swift.git", from: "10.53.0"),
     ],
     targets: [
         .target(
             name: "RealmSwiftGaps",
             dependencies: [
-//                .product(name: "Realm", package: "RealmBinary"),
-                .product(name: "RealmSwift", package: "RealmBinary"),
-//                .product(name: "RealmSwift", package: "realm-swift"),
+//                .product(name: "RealmSwift", package: "RealmBinary"),
+                .product(name: "RealmSwift", package: "realm-swift"),
             ]),
 //        .testTarget(
 //            name: "RealmSwiftGapsTests",
