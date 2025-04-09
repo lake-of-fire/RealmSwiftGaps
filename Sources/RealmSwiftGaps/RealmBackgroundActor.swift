@@ -16,6 +16,14 @@ public actor RealmBackgroundActor: @preconcurrency CachedRealmsActor {
     
     public var cachedRealms = [String: RealmSwift.Realm]()
     
+    public func cachedRealm(for configuration: Realm.Configuration) async throws -> Realm {
+        if let cachedRealm = existingCachedRealm(for: configuration) {
+            return cachedRealm
+        }
+        let realm = try await Realm(configuration: configuration, actor: self)
+        return setCachedRealmIfNeeded(realm, for: configuration)
+    }
+    
     public func run(_ operation: @escaping () async throws -> Void) async {
         do {
             try await operation()
