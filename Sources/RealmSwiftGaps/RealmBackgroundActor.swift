@@ -9,21 +9,21 @@ public enum RealmBackgroundActorError: Error {
 }
 
 @globalActor
-public actor RealmBackgroundActor: @preconcurrency CachedRealmsActor {
+public actor RealmBackgroundActor: CachedRealmsActor {
     public static var shared = RealmBackgroundActor()
 
     public init() { }
     
     public var cachedRealms = [String: RealmSwift.Realm]()
     
-    public func cachedRealm(for configuration: Realm.Configuration) async throws -> Realm {
-        if let cachedRealm = existingCachedRealm(for: configuration) {
-            return cachedRealm
-        }
-        let realm = try await Realm(configuration: configuration, actor: self)
-        return setCachedRealmIfNeeded(realm, for: configuration)
+    public func getCachedRealm(key: String) async -> Realm? {
+        return cachedRealms[key]
     }
     
+    public func setCachedRealm(_ realm: Realm, key: String) async {
+        cachedRealms[key] = realm
+    }
+
     public func run(_ operation: @escaping () async throws -> Void) async {
         do {
             try await operation()
