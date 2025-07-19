@@ -48,6 +48,7 @@ public extension Realm {
         }
     }
     
+    @_unsafeInheritExecutor
     static func asyncWrite(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) async throws {
         try await { @RealmBackgroundActor in
             do {
@@ -60,6 +61,7 @@ public extension Realm {
         }()
     }
     
+    @_unsafeInheritExecutor
     static func asyncWrite<T: ThreadConfined>(_ passedObject: ThreadSafeReference<T>, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) async throws {
         try await { @RealmBackgroundActor in
             do {
@@ -73,6 +75,7 @@ public extension Realm {
         }()
     }
     
+    @_unsafeInheritExecutor
     static func asyncWrite<T: ThreadConfined>(_ passedObjects: [ThreadSafeReference<T>], configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) async throws {
         try await { @RealmBackgroundActor in
             do {

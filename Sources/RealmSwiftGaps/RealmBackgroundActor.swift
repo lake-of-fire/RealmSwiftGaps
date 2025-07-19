@@ -10,7 +10,7 @@ public enum RealmBackgroundActorError: Error {
 
 @globalActor
 public actor RealmBackgroundActor: CachedRealmsActor {
-    public static var shared = RealmBackgroundActor()
+    public static let shared = RealmBackgroundActor()
 
     public init() { }
     
