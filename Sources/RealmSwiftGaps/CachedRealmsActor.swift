@@ -1,5 +1,6 @@
 import Foundation
 import RealmSwift
+import Realm
 
 public protocol CachedRealmsActor: AnyObject {
     func getCachedRealm(key: String) async -> Realm?
