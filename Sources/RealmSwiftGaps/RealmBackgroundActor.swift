@@ -16,14 +16,17 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     
     public var cachedRealms = [String: RealmSwift.Realm]()
     
+    @inline(__always)
     public func getCachedRealm(key: String) async -> Realm? {
         return cachedRealms[key]
     }
     
+    @inline(__always)
     public func setCachedRealm(_ realm: Realm, key: String) async {
         cachedRealms[key] = realm
     }
 
+    @inline(__always)
     public func run(_ operation: @escaping () async throws -> Void) async {
         do {
             try await operation()
@@ -32,6 +35,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         }
     }
     
+    @inline(__always)
     public func write(configuration: Realm.Configuration, operation: @escaping (Realm) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
         try await realm.asyncWrite {
@@ -39,6 +43,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         }
     }
     
+    @inline(__always)
     public func write<T: ThreadConfined>(_ reference: ThreadSafeReference<T>, configuration: Realm.Configuration, operation: @escaping (Realm, T) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
         guard let resolvedObject = realm.resolve(reference) else { throw RealmBackgroundActorError.unableToResolveObject }

@@ -147,6 +147,7 @@ extension URL: FailableCustomPersistable {
         self = url
     }
     
+    @inline(__always)
     public var persistableValue: String {
         absoluteString
     }
@@ -157,6 +158,7 @@ extension URL: FailableCustomPersistable {
 }
 
 public extension Object {
+    @inline(__always)
     var primaryKeyValue: String? {
         guard let pkName = type(of: self).sharedSchema()?.primaryKeyProperty?.name else { return nil }
         guard let pkType = type(of: self).sharedSchema()?.primaryKeyProperty?.type else { return nil }
@@ -169,6 +171,7 @@ public extension Object {
         }
     }
     
+    @inline(__always)
     func isSameObjectByPrimaryKey(as other: Object?) -> Bool {
         guard let other = other else { return false }
         guard type(of: self) == type(of: other) else { return false }
