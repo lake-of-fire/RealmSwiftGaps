@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "realmbinary",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/lake-of-fire/RealmBinary.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "7fa2643afbbe8ffdce78ab38d284f12924f0d913"
+      }
+    }
+  ],
+  "version" : 2
+}
