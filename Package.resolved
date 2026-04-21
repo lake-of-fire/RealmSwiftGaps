@@ -1,12 +1,21 @@
 {
   "pins" : [
     {
-      "identity" : "realmbinary",
+      "identity" : "realm-core",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lake-of-fire/RealmBinary.git",
+      "location" : "https://github.com/realm/realm-core.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "7fa2643afbbe8ffdce78ab38d284f12924f0d913"
+        "revision" : "4cc46f8607516226e5465062fdacd088fbd94552",
+        "version" : "20.1.4"
+      }
+    },
+    {
+      "identity" : "realm-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/realm/realm-swift.git",
+      "state" : {
+        "revision" : "600e187711e5fa4e8e2c0429cacee27e8e44f112",
+        "version" : "20.0.4"
       }
     }
   ],
