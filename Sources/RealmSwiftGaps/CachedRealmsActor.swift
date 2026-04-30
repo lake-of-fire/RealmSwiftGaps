@@ -8,6 +8,14 @@ public protocol CachedRealmsActor: AnyObject {
 }
 
 public extension CachedRealmsActor where Self: Actor {
+    @inline(__always)
+    private func cachedRealmKey(for configuration: Realm.Configuration) -> String {
+        if let inMemoryIdentifier = configuration.inMemoryIdentifier {
+            return "memory:\(inMemoryIdentifier)"
+        }
+        return "file:\(configuration.fileURL?.deletingPathExtension().lastPathComponent ?? "")"
+    }
+
     @inlinable
     func cachedRealm(for configuration: Realm.Configuration) async throws -> Realm {
         if let cachedRealm = await existingCachedRealm(for: configuration) {
@@ -20,7 +28,7 @@ public extension CachedRealmsActor where Self: Actor {
     
     @inline(__always)
     public func existingCachedRealm(for configuration: Realm.Configuration) async -> Realm? {
-        let key = configuration.fileURL?.deletingPathExtension().lastPathComponent ?? ""
+        let key = cachedRealmKey(for: configuration)
         return await getCachedRealm(key: key)
     }
     
@@ -36,7 +44,7 @@ public extension CachedRealmsActor where Self: Actor {
 
     @inline(__always)
     public func setCachedRealm(_ realm: Realm, for configuration: Realm.Configuration) async {
-        let key = configuration.fileURL?.deletingPathExtension().lastPathComponent ?? ""
+        let key = cachedRealmKey(for: configuration)
         await setCachedRealm(realm, key: key)
     }
 }
