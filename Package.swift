@@ -19,6 +19,7 @@ let package = Package(
         .target(
             name: "RealmSwiftGaps",
             dependencies: [
+                .product(name: "Realm", package: "realm-swift"),
                 .product(name: "RealmSwift", package: "realm-swift"),
             ]),
 //        .testTarget(

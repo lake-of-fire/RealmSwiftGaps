@@ -159,7 +159,7 @@ public extension Object {
     var primaryKeyValue: String? {
         guard let pkName = type(of: self).sharedSchema()?.primaryKeyProperty?.name else { return nil }
         guard let pkType = type(of: self).sharedSchema()?.primaryKeyProperty?.type else { return nil }
-        guard let pkValue = self.value(forKey: pkName) else { return nil }
+        guard let pkValue = self[pkName] else { return nil }
         switch pkType {
         case .UUID:
             return (pkValue as? UUID)?.uuidString
