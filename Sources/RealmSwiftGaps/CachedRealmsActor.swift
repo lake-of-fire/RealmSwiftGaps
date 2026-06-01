@@ -19,7 +19,9 @@ public extension CachedRealmsActor where Self: Actor {
     
     @inline(__always)
     public func existingCachedRealm(for configuration: Realm.Configuration) async -> Realm? {
-        let key = configuration.fileURL?.deletingPathExtension().lastPathComponent ?? ""
+        let key = configuration.fileURL?.deletingPathExtension().lastPathComponent
+            ?? configuration.inMemoryIdentifier.map { "in-memory:\($0)" }
+            ?? ""
         return await getCachedRealm(key: key)
     }
     
@@ -35,7 +37,9 @@ public extension CachedRealmsActor where Self: Actor {
 
     @inline(__always)
     public func setCachedRealm(_ realm: Realm, for configuration: Realm.Configuration) async {
-        let key = configuration.fileURL?.deletingPathExtension().lastPathComponent ?? ""
+        let key = configuration.fileURL?.deletingPathExtension().lastPathComponent
+            ?? configuration.inMemoryIdentifier.map { "in-memory:\($0)" }
+            ?? ""
         await setCachedRealm(realm, key: key)
     }
 }
