@@ -1,8 +1,7 @@
 import Foundation
-import Realm
 import RealmSwift
 
-extension RealmSwiftObject: @unchecked Sendable { }
+extension Object: @unchecked Sendable { }
 
 public enum RealmBackgroundActorError: Error {
     case unableToResolveObject
@@ -17,12 +16,12 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     public var cachedRealms = [String: RealmSwift.Realm]()
     
     @inline(__always)
-    public func getCachedRealm(key: String) async -> Realm? {
+    public func getCachedRealm(key: String) async -> RealmSwift.Realm? {
         return cachedRealms[key]
     }
     
     @inline(__always)
-    public func setCachedRealm(_ realm: Realm, key: String) async {
+    public func setCachedRealm(_ realm: RealmSwift.Realm, key: String) async {
         cachedRealms[key] = realm
     }
 
@@ -36,7 +35,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     }
     
     @inline(__always)
-    public func write(configuration: Realm.Configuration, operation: @escaping (Realm) throws -> Void) async throws {
+    public func write(configuration: Realm.Configuration, operation: @escaping (RealmSwift.Realm) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
         try await realm.asyncWrite {
             try operation(realm)
@@ -44,7 +43,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     }
     
     @inline(__always)
-    public func write<T: ThreadConfined>(_ reference: ThreadSafeReference<T>, configuration: Realm.Configuration, operation: @escaping (Realm, T) throws -> Void) async throws {
+    public func write<T: ThreadConfined>(_ reference: ThreadSafeReference<T>, configuration: Realm.Configuration, operation: @escaping (RealmSwift.Realm, T) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
         guard let resolvedObject = realm.resolve(reference) else { throw RealmBackgroundActorError.unableToResolveObject }
         

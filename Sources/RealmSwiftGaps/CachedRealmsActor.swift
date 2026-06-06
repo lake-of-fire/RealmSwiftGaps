@@ -1,6 +1,5 @@
 import Foundation
 import RealmSwift
-import Realm
 
 public protocol CachedRealmsActor: AnyObject {
     func getCachedRealm(key: String) async -> Realm?
@@ -13,7 +12,10 @@ public extension CachedRealmsActor where Self: Actor {
         if let inMemoryIdentifier = configuration.inMemoryIdentifier {
             return "memory:\(inMemoryIdentifier)"
         }
-        return "file:\(configuration.fileURL?.deletingPathExtension().lastPathComponent ?? "")"
+        if let fileURL = configuration.fileURL {
+            return "file:\(fileURL.standardizedFileURL.path)"
+        }
+        return "file:"
     }
 
     @inlinable
