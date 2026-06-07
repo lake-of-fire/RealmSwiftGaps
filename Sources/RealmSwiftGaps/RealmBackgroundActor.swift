@@ -37,7 +37,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     @inline(__always)
     public func write(configuration: Realm.Configuration, operation: @escaping (RealmSwift.Realm) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
-        try await realm.asyncWrite {
+        try realm.writeIfNeeded {
             try operation(realm)
         }
     }
@@ -47,7 +47,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         let realm = try await cachedRealm(for: configuration)
         guard let resolvedObject = realm.resolve(reference) else { throw RealmBackgroundActorError.unableToResolveObject }
         
-        try await realm.asyncWrite {
+        try realm.writeIfNeeded {
             try operation(realm, resolvedObject)
         }
     }

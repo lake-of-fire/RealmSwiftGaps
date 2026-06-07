@@ -22,6 +22,14 @@ import RealmSwift
 //}
 
 public extension Realm {
+    @discardableResult
+    func writeIfNeeded<T>(_ block: () throws -> T) throws -> T {
+        if isInWriteTransaction {
+            return try block()
+        }
+        return try write(block)
+    }
+
     static func writeAsync<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) {
         let ref = ThreadSafeReference(to: passedObject)
         Task { @RealmBackgroundActor in
@@ -29,7 +37,7 @@ public extension Realm {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
                 guard let object = realm.resolve(ref) else { return }
 //                await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                try realm.writeIfNeeded {
                     block(realm, object)
                 }
             }
@@ -41,7 +49,7 @@ public extension Realm {
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
 //                await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                try realm.writeIfNeeded {
                     block(realm)
                 }
             }
@@ -54,7 +62,7 @@ public extension Realm {
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
 //                await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                try realm.writeIfNeeded {
                     block(realm)
                 }
             }
@@ -67,7 +75,7 @@ public extension Realm {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
             guard let object = realm.resolve(passedObject) else { return }
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try realm.writeIfNeeded {
                 block(realm, object)
             }
         }()
@@ -79,7 +87,7 @@ public extension Realm {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
             let objects = passedObjects.compactMap { realm.resolve($0) }
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try realm.writeIfNeeded {
                 for object in objects {
                     block(realm, object)
                 }
