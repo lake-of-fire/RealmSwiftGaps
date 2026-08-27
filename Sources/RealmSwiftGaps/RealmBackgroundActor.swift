@@ -1,8 +1,7 @@
 import Foundation
-import Realm
 import RealmSwift
 
-extension RealmSwiftObject: @unchecked Sendable { }
+extension Object: @unchecked Sendable { }
 
 public enum RealmBackgroundActorError: Error {
     case unableToResolveObject
