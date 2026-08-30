@@ -7,8 +7,8 @@ public struct RealmCSVTextField<ObjectType>: View where ObjectType: RealmSwift.O
     @ObservedRealmObject var object: ObjectType
     @Binding var objectValue: RealmSwift.List<String>
     
-    @State var realtimeValue = ""
-    @State var publisher = PassthroughSubject<String, Never>()
+    @State private var realtimeValue = ""
+    @State private var publisher = PassthroughSubject<String, Never>()
     var label: String
     
     var valueChanged: ((_ value: String) -> Void)?
