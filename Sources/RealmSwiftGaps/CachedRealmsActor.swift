@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import RealmSwift
 
@@ -8,13 +9,35 @@ public protocol CachedRealmsActor: AnyObject {
 
 public extension CachedRealmsActor where Self: Actor {
     func realmCacheKey(for configuration: Realm.Configuration) -> String {
+        let storageIdentity: String
         if let inMemoryIdentifier = configuration.inMemoryIdentifier {
-            return "memory:\(inMemoryIdentifier)"
+            storageIdentity = "memory:\(inMemoryIdentifier)"
+        } else if let fileURL = configuration.fileURL {
+            let standardizedURL = fileURL.standardizedFileURL
+            let resourceIdentifier = (try? standardizedURL.resourceValues(
+                forKeys: [.fileResourceIdentifierKey]
+            ).fileResourceIdentifier).map { String(describing: $0) }
+                ?? "missing"
+            storageIdentity = "file:\(standardizedURL.path):\(resourceIdentifier)"
+        } else {
+            storageIdentity = "file:"
         }
-        if let fileURL = configuration.fileURL {
-            return "file:\(fileURL.standardizedFileURL.path)"
-        }
-        return "file:"
+        let objectTypes = (configuration.objectTypes ?? [])
+            .map { "\($0.className()):\(String(reflecting: $0))" }
+            .sorted()
+            .joined(separator: ",")
+        let encryptionFingerprint = configuration.encryptionKey.map {
+            SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
+        } ?? "none"
+        return [
+            storageIdentity,
+            "schema:\(configuration.schemaVersion)",
+            "readOnly:\(configuration.readOnly)",
+            "deleteIfMigrationNeeded:\(configuration.deleteRealmIfMigrationNeeded)",
+            "seed:\(configuration.seedFilePath?.standardizedFileURL.path ?? "none")",
+            "encryption:\(encryptionFingerprint)",
+            "objects:\(objectTypes)",
+        ].joined(separator: "|")
     }
 
     @inlinable

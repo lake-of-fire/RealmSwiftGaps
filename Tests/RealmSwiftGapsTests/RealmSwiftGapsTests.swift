@@ -9,14 +9,15 @@ private actor TestRealmCache: CachedRealmsActor {
     func setCachedRealm(_ realm: Realm, key: String) async { realms[key] = realm }
 }
 
-final class RealmSwiftGapsTests: XCTestCase {
-    func testExample() throws {
-        // This is an example of a functional test case.
-        // Use XCTAssert and related functions to verify your tests produce the correct
-        // results.
-        XCTAssertEqual(RealmSwiftGaps().text, "Hello, World!")
-    }
+final class FirstCachedRealmObject: Object {
+    @Persisted(primaryKey: true) var id = ""
+}
 
+final class SecondCachedRealmObject: Object {
+    @Persisted(primaryKey: true) var id = ""
+}
+
+final class RealmSwiftGapsTests: XCTestCase {
     func testRealmCacheKeysUseStandardizedFullPathsAndSeparateMemoryNamespace() async {
         let cache = TestRealmCache()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -35,7 +36,35 @@ final class RealmSwiftGapsTests: XCTestCase {
 
         XCTAssertEqual(firstKey, equivalentFirstKey)
         XCTAssertNotEqual(firstKey, secondKey)
-        XCTAssertEqual(firstKey, "file:\(firstURL.standardizedFileURL.path)")
-        XCTAssertEqual(memoryKey, "memory:shared.realm")
+        XCTAssertTrue(firstKey.hasPrefix(
+            "file:\(firstURL.standardizedFileURL.path):"
+        ))
+        XCTAssertTrue(memoryKey.hasPrefix("memory:shared.realm|"))
+    }
+
+    func testRealmCacheKeysFenceConfigurationAuthority() async {
+        let cache = TestRealmCache()
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("realm-cache-\(UUID().uuidString).realm")
+        var baseline = Realm.Configuration(fileURL: fileURL)
+        baseline.objectTypes = [FirstCachedRealmObject.self]
+        var revisedSchema = baseline
+        revisedSchema.schemaVersion += 1
+        var readOnly = baseline
+        readOnly.readOnly = true
+        var revisedObjects = baseline
+        revisedObjects.objectTypes = [SecondCachedRealmObject.self]
+        var encrypted = baseline
+        encrypted.encryptionKey = Data(repeating: 7, count: 64)
+
+        let baselineKey = await cache.realmCacheKey(for: baseline)
+        let keys = [
+            await cache.realmCacheKey(for: revisedSchema),
+            await cache.realmCacheKey(for: readOnly),
+            await cache.realmCacheKey(for: revisedObjects),
+            await cache.realmCacheKey(for: encrypted),
+        ]
+
+        XCTAssertTrue(keys.allSatisfy { $0 != baselineKey })
     }
 }
