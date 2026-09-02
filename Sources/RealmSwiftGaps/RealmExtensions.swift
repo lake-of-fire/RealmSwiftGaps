@@ -84,7 +84,9 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration) 
-                let objects = passedObjects.compactMap { realm.resolve($0) }
+                let objects: [T] = passedObjects.compactMap {
+                    realm.resolve($0)
+                }
                 try realm.writeIfNeeded {
                     for object in objects {
                         block(realm, object)
