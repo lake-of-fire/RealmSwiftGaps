@@ -7,8 +7,8 @@ public struct RealmTextField<ObjectType>: View where ObjectType: RealmSwift.Obje
     @ObservedRealmObject var object: ObjectType
     @Binding var objectValue: String
     
-    @State var realtimeValue = ""
-    @State var publisher = PassthroughSubject<String, Never>()
+    @State private var realtimeValue = ""
+    @State private var publisher = PassthroughSubject<String, Never>()
     var label: String
     
     var valueChanged: ((_ value: String) -> Void)?
