@@ -1,0 +1,4 @@
+extern module Bid "/Users/alex/Code/manabi/manabi-reader/Tuist/.build/tuist-derived/ModuleMaps/Bid/Bid.modulemap"
+extern module Realm "/Users/alex/Code/manabi/manabi-reader/Tuist/.build/checkouts/realm-swift/include/module.modulemap"
+extern module RealmCore "/Users/alex/Code/manabi/manabi-reader/Tuist/.build/checkouts/realm-core/src/module.modulemap"
+extern module s2geometry "/Users/alex/Code/manabi/manabi-reader/Tuist/.build/tuist-derived/ModuleMaps/s2geometry/s2geometry.modulemap"
