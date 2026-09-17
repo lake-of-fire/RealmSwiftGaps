@@ -23,6 +23,14 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         cachedRealms[key] = realm
     }
 
+    /// Releases an explicitly scoped Realm when its configuration is no longer
+    /// needed. Production configurations remain cached for the actor lifetime,
+    /// while callers that create transient configurations can bound their file
+    /// descriptor usage.
+    public func removeCachedRealm(for configuration: Realm.Configuration) {
+        cachedRealms.removeValue(forKey: realmCacheKey(for: configuration))?.invalidate()
+    }
+
     public func run(_ operation: @escaping () async throws -> Void) async {
         do {
             try await operation()
