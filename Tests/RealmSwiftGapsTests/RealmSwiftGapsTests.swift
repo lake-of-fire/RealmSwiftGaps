@@ -67,4 +67,34 @@ final class RealmSwiftGapsTests: XCTestCase {
 
         XCTAssertTrue(keys.allSatisfy { $0 != baselineKey })
     }
+
+    func testRealmBackgroundActorCoalescesConcurrentInitialOpens() async throws {
+        let identifier = "concurrent-open-\(UUID().uuidString)"
+        var configuration = Realm.Configuration()
+        configuration.inMemoryIdentifier = identifier
+        configuration.objectTypes = [FirstCachedRealmObject.self]
+
+        let realms = try await withThrowingTaskGroup(of: Realm.self) { group in
+            for _ in 0..<12 {
+                group.addTask {
+                    try await RealmBackgroundActor.shared.cachedRealm(
+                        for: configuration
+                    )
+                }
+            }
+
+            var opened = [Realm]()
+            for try await realm in group {
+                opened.append(realm)
+            }
+            return opened
+        }
+
+        XCTAssertEqual(realms.count, 12)
+        XCTAssertEqual(
+            Set(realms.compactMap { $0.configuration.inMemoryIdentifier }),
+            Set([identifier])
+        )
+        await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+    }
 }
