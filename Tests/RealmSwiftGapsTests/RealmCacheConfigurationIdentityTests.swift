@@ -5,9 +5,13 @@ import XCTest
 
 private actor ConfigurationIdentityRealmCache: @preconcurrency CachedRealmsActor {
     private var realms = [String: Realm]()
+    private var storeCount = 0
 
     func getCachedRealm(key: String) async -> Realm? { realms[key] }
-    func setCachedRealm(_ realm: Realm, key: String) async { realms[key] = realm }
+    func setCachedRealm(_ realm: Realm, key: String) async {
+        realms[key] = realm
+        storeCount += 1
+    }
 
     func cacheRejectsDifferentSchema() async throws -> Bool {
         var configuration = Realm.Configuration()
@@ -18,7 +22,9 @@ private actor ConfigurationIdentityRealmCache: @preconcurrency CachedRealmsActor
         var revised = configuration
         revised.schemaVersion += 1
         let mismatched = await existingCachedRealm(for: revised)
-        return original === repeated && mismatched == nil
+        // Realm is a struct; its Equatable implementation compares the wrapped
+        // native Realm. Also prove the actor cache was not populated twice.
+        return original == repeated && mismatched == nil && storeCount == 1
     }
 }
 
@@ -33,7 +39,7 @@ private final class SecondConfigurationIdentityObject: Object, @unchecked Sendab
 }
 
 final class RealmCacheConfigurationIdentityTests: XCTestCase {
-    func testStandardizedPathsAndMemoryNamespace() async {
+    func testStandardizedPathsAndMemoryNamespace() {
         let cache = ConfigurationIdentityRealmCache()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let first = Realm.Configuration(fileURL: root.appendingPathComponent("first/shared.realm"))
@@ -42,16 +48,16 @@ final class RealmCacheConfigurationIdentityTests: XCTestCase {
         var memory = Realm.Configuration()
         memory.inMemoryIdentifier = "shared.realm"
 
-        let firstKey = await cache.realmCacheKey(for: first)
-        let equivalentKey = await cache.realmCacheKey(for: equivalent)
-        let secondKey = await cache.realmCacheKey(for: second)
-        let memoryKey = await cache.realmCacheKey(for: memory)
+        let firstKey = cache.realmCacheKey(for: first)
+        let equivalentKey = cache.realmCacheKey(for: equivalent)
+        let secondKey = cache.realmCacheKey(for: second)
+        let memoryKey = cache.realmCacheKey(for: memory)
         XCTAssertEqual(firstKey, equivalentKey)
         XCTAssertNotEqual(firstKey, secondKey)
         XCTAssertNotEqual(firstKey, memoryKey)
     }
 
-    func testConfigurationChangesCannotReuseCacheIdentity() async {
+    func testConfigurationChangesCannotReuseCacheIdentity() {
         let cache = ConfigurationIdentityRealmCache()
         var baseline = Realm.Configuration()
         baseline.inMemoryIdentifier = UUID().uuidString
@@ -69,19 +75,19 @@ final class RealmCacheConfigurationIdentityTests: XCTestCase {
         var seeded = baseline
         seeded.seedFilePath = FileManager.default.temporaryDirectory.appendingPathComponent("seed.realm")
 
-        let baselineKey = await cache.realmCacheKey(for: baseline)
+        let baselineKey = cache.realmCacheKey(for: baseline)
         for configuration in [schema, readOnly, objects, encrypted, deleteOnMigration, seeded] {
-            let key = await cache.realmCacheKey(for: configuration)
+            let key = cache.realmCacheKey(for: configuration)
             XCTAssertNotEqual(key, baselineKey)
         }
         var otherEncryption = encrypted
         otherEncryption.encryptionKey = Data(repeating: 8, count: 64)
-        let encryptedKey = await cache.realmCacheKey(for: encrypted)
-        let otherEncryptedKey = await cache.realmCacheKey(for: otherEncryption)
+        let encryptedKey = cache.realmCacheKey(for: encrypted)
+        let otherEncryptedKey = cache.realmCacheKey(for: otherEncryption)
         XCTAssertNotEqual(encryptedKey, otherEncryptedKey)
     }
 
-    func testExplicitObjectOrderIsIrrelevantButAutomaticSchemaIsDistinct() async {
+    func testExplicitObjectOrderIsIrrelevantButAutomaticSchemaIsDistinct() {
         let cache = ConfigurationIdentityRealmCache()
         var automatic = Realm.Configuration()
         automatic.inMemoryIdentifier = UUID().uuidString
@@ -93,16 +99,16 @@ final class RealmCacheConfigurationIdentityTests: XCTestCase {
         var secondOrder = automatic
         secondOrder.objectTypes = [SecondConfigurationIdentityObject.self, FirstConfigurationIdentityObject.self]
 
-        let automaticKey = await cache.realmCacheKey(for: automatic)
-        let emptyKey = await cache.realmCacheKey(for: empty)
-        let firstKey = await cache.realmCacheKey(for: firstOrder)
-        let secondKey = await cache.realmCacheKey(for: secondOrder)
+        let automaticKey = cache.realmCacheKey(for: automatic)
+        let emptyKey = cache.realmCacheKey(for: empty)
+        let firstKey = cache.realmCacheKey(for: firstOrder)
+        let secondKey = cache.realmCacheKey(for: secondOrder)
         XCTAssertNotEqual(automaticKey, emptyKey)
         XCTAssertNotEqual(automaticKey, firstKey)
         XCTAssertEqual(firstKey, secondKey)
     }
 
-    func testEquivalentSeedPathsHaveSameIdentity() async {
+    func testEquivalentSeedPathsHaveSameIdentity() {
         let cache = ConfigurationIdentityRealmCache()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         var first = Realm.Configuration()
@@ -110,12 +116,12 @@ final class RealmCacheConfigurationIdentityTests: XCTestCase {
         first.seedFilePath = root.appendingPathComponent("seeds/initial.realm")
         var second = first
         second.seedFilePath = root.appendingPathComponent("seeds/../seeds/initial.realm")
-        let firstKey = await cache.realmCacheKey(for: first)
-        let secondKey = await cache.realmCacheKey(for: second)
+        let firstKey = cache.realmCacheKey(for: first)
+        let secondKey = cache.realmCacheKey(for: second)
         XCTAssertEqual(firstKey, secondKey)
     }
 
-    func testReplacingFileAtSamePathChangesIdentity() async throws {
+    func testReplacingFileAtSamePathChangesIdentity() throws {
         let cache = ConfigurationIdentityRealmCache()
         let manager = FileManager.default
         let root = manager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -123,15 +129,15 @@ final class RealmCacheConfigurationIdentityTests: XCTestCase {
         defer { try? manager.removeItem(at: root) }
         let fileURL = root.appendingPathComponent("reader.realm")
         let configuration = Realm.Configuration(fileURL: fileURL)
-        let missingKey = await cache.realmCacheKey(for: configuration)
+        let missingKey = cache.realmCacheKey(for: configuration)
         // No Realm is opened here: this exercises filesystem identity, not migration.
         try Data([1]).write(to: fileURL)
         XCTAssertNotNil(try fileURL.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier)
-        let firstKey = await cache.realmCacheKey(for: configuration)
+        let firstKey = cache.realmCacheKey(for: configuration)
         // Retain the original inode at another path to avoid inode-reuse ambiguity.
         try manager.moveItem(at: fileURL, to: root.appendingPathComponent("previous.realm"))
         try Data([2]).write(to: fileURL)
-        let replacementKey = await cache.realmCacheKey(for: configuration)
+        let replacementKey = cache.realmCacheKey(for: configuration)
         XCTAssertNotEqual(missingKey, firstKey)
         XCTAssertNotEqual(firstKey, replacementKey)
     }
