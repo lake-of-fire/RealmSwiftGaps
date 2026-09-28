@@ -31,7 +31,11 @@ jobs:
           git rev-parse HEAD > evidence/tested-commit.txt
           git ls-tree -r HEAD > evidence/source-manifest.txt
           swift --version > evidence/toolchain.txt
-          swift test -c ${{ matrix.configuration }} 2>&1 | tee evidence/test.log
+          # Realm Core's s2geometry include requires an implicitly built Clang
+          # module on this toolchain. Do not patch the dependency or suppress
+          # test failures. Record the qualification-only compiler option.
+          printf '%s\n' 'swift test -Xcc -fimplicit-modules' > evidence/build-options.txt
+          swift test -Xcc -fimplicit-modules -c ${{ matrix.configuration }} 2>&1 | tee evidence/test.log
       - name: Retain reproducible sources and dependency resolution
         if: always()
         shell: bash
