@@ -37,21 +37,38 @@ public actor RealmBackgroundActor: CachedRealmsActor {
             return cachedRealm
         }
 
-        if let pendingOpen = pendingRealmOpens[key] {
+        // A missing file may appear while its first open is suspended,
+        // changing the completed cache key. Coalesce that first creation by
+        // path, but keep existing-file opens keyed by resource ID so a file
+        // replaced during an open does not share the old file's Realm.
+        let pendingKey = realmCacheKey(
+            for: configuration, includingFileResourceIdentifier: false
+        )
+        if let pendingOpen = pendingRealmOpens[key]
+            ?? pendingRealmOpens[pendingKey] {
             return try await pendingOpen.value
         }
+
+        let opensMissingFile = configuration.fileURL.map {
+            !FileManager.default.fileExists(atPath: $0.standardizedFileURL.path)
+        } ?? false
+        let openKey = opensMissingFile ? pendingKey : key
 
         let pendingOpen = Task {
             try await RealmSwift.Realm(configuration: configuration, actor: self)
         }
-        pendingRealmOpens[key] = pendingOpen
-        defer { pendingRealmOpens.removeValue(forKey: key) }
+        pendingRealmOpens[openKey] = pendingOpen
+        defer { pendingRealmOpens.removeValue(forKey: openKey) }
 
         let realm = try await pendingOpen.value
-        if let cachedRealm = cachedRealms[key] {
+        // Opening a new disk Realm creates its file, changing the resource ID
+        // used by realmCacheKey. Store under the identity future lookups and
+        // explicit eviction will actually use.
+        let openedKey = realmCacheKey(for: configuration)
+        if let cachedRealm = cachedRealms[openedKey] {
             return cachedRealm
         }
-        cachedRealms[key] = realm
+        cachedRealms[openedKey] = realm
         return realm
     }
 

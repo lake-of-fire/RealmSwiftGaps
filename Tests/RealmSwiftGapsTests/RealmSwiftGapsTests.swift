@@ -97,4 +97,44 @@ final class RealmSwiftGapsTests: XCTestCase {
         )
         await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
     }
+
+    func testNewDiskRealmCanBeFoundAndEvictedAfterItsFileAppears() async throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("realm-cache-\(UUID().uuidString).realm")
+        var configuration = Realm.Configuration(fileURL: fileURL)
+        configuration.objectTypes = [FirstCachedRealmObject.self]
+        let actor = RealmBackgroundActor.shared
+
+        _ = try await actor.cachedRealm(for: configuration)
+        let currentKey = await actor.realmCacheKey(for: configuration)
+        let cached = await actor.getCachedRealm(key: currentKey)
+        XCTAssertNotNil(cached)
+
+        await actor.removeCachedRealm(for: configuration)
+        let evicted = await actor.getCachedRealm(key: currentKey)
+        XCTAssertNil(evicted)
+    }
+
+    func testPendingDiskRealmIdentitySurvivesFileCreation() async throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("realm-pending-\(UUID().uuidString).realm")
+        var configuration = Realm.Configuration(fileURL: fileURL)
+        configuration.objectTypes = [FirstCachedRealmObject.self]
+        let actor = RealmBackgroundActor.shared
+        let pendingBefore = await actor.realmCacheKey(
+            for: configuration, includingFileResourceIdentifier: false
+        )
+        let completedBefore = await actor.realmCacheKey(for: configuration)
+
+        _ = try await actor.cachedRealm(for: configuration)
+
+        let pendingAfter = await actor.realmCacheKey(
+            for: configuration, includingFileResourceIdentifier: false
+        )
+        let completedAfter = await actor.realmCacheKey(for: configuration)
+        XCTAssertEqual(pendingBefore, pendingAfter)
+        XCTAssertNotEqual(completedBefore, completedAfter)
+        await actor.removeCachedRealm(for: configuration)
+    }
+
 }
