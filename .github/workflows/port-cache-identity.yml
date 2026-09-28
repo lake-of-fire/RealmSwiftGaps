@@ -1,0 +1,61 @@
+name: Port Realm cache regressions
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: realm-cache-port-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  tests:
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+        toolchain: [xcode, swift-6.2.1]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2
+        if: matrix.toolchain == 'swift-6.2.1'
+        with:
+          swift-version: '6.2.1'
+      - name: Record inputs and test full package
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/tested-commit.txt
+          git ls-tree -r HEAD > evidence/source-manifest.txt
+          if [[ '${{ matrix.toolchain }}' == xcode ]]; then
+            export DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer
+            compiler=(xcrun --toolchain XcodeDefault swift)
+            xcodebuild -version > evidence/xcode.txt
+          else
+            compiler=(swift)
+          fi
+          "${compiler[@]}" --version > evidence/toolchain.txt
+          # The independent Apple toolchain run distinguishes the OSS Clang
+          # module failure from this package's actual Swift/API/test behavior.
+          # Neither configuration patches Realm, disables features, changes a
+          # production requirement or suppresses a failed test/dependency build.
+          printf '%s ' "${compiler[@]}" test -v -c '${{ matrix.configuration }}' > evidence/build-options.txt
+          "${compiler[@]}" test -v -c '${{ matrix.configuration }}' 2>&1 | tee evidence/test.log
+      - name: Retain reproducible sources and dependency resolution
+        if: always()
+        shell: bash
+        run: |
+          test ! -f Package.resolved || cp Package.resolved evidence/Package.resolved
+          tar -czf evidence/source.tar.gz Sources Tests Package.swift
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: realm-cache-port-${{ matrix.toolchain }}-${{ matrix.configuration }}-${{ github.run_attempt }}
+          path: evidence
+          retention-days: 7
+          if-no-files-found: error
