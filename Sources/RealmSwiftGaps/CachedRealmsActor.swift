@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import RealmSwift
 
@@ -7,15 +8,41 @@ public protocol CachedRealmsActor: AnyObject {
 }
 
 public extension CachedRealmsActor where Self: Actor {
-    @inline(__always)
-    private func cachedRealmKey(for configuration: Realm.Configuration) -> String {
+    /// Identifies the storage and configuration used to open a cached Realm.
+    /// This is a process-local cache key, not a persisted dataset identifier.
+    func realmCacheKey(for configuration: Realm.Configuration) -> String {
+        let storageIdentity: String
         if let inMemoryIdentifier = configuration.inMemoryIdentifier {
-            return "memory:\(inMemoryIdentifier)"
+            storageIdentity = "memory:\(inMemoryIdentifier)"
+        } else if let fileURL = configuration.fileURL {
+            let standardizedURL = fileURL.standardizedFileURL
+            let resourceIdentifier = (try? standardizedURL.resourceValues(
+                forKeys: [.fileResourceIdentifierKey]
+            ).fileResourceIdentifier).map { String(describing: $0) }
+                ?? "missing"
+            storageIdentity = "file:\(standardizedURL.path):\(resourceIdentifier)"
+        } else {
+            storageIdentity = "file:"
         }
-        if let fileURL = configuration.fileURL {
-            return "file:\(fileURL.standardizedFileURL.path)"
-        }
-        return "file:"
+        // nil discovers all registered object types; an explicit empty list does not.
+        let objectTypes = configuration.objectTypes.map { types in
+            "explicit:" + types
+                .map { "\($0.className()):\(String(reflecting: $0))" }
+                .sorted()
+                .joined(separator: ",")
+        } ?? "all"
+        let encryptionFingerprint = configuration.encryptionKey.map {
+            SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
+        } ?? "none"
+        return [
+            storageIdentity,
+            "schema:\(configuration.schemaVersion)",
+            "readOnly:\(configuration.readOnly)",
+            "deleteIfMigrationNeeded:\(configuration.deleteRealmIfMigrationNeeded)",
+            "seed:\(configuration.seedFilePath?.standardizedFileURL.path ?? "none")",
+            "encryption:\(encryptionFingerprint)",
+            "objects:\(objectTypes)",
+        ].joined(separator: "|")
     }
 
     @inlinable
@@ -23,17 +50,16 @@ public extension CachedRealmsActor where Self: Actor {
         if let cachedRealm = await existingCachedRealm(for: configuration) {
             return cachedRealm
         }
-       
+
         let realm = try await Realm(configuration: configuration, actor: self)
         return await setCachedRealmIfNeeded(realm, for: configuration)
     }
-    
+
     @inline(__always)
     public func existingCachedRealm(for configuration: Realm.Configuration) async -> Realm? {
-        let key = cachedRealmKey(for: configuration)
-        return await getCachedRealm(key: key)
+        await getCachedRealm(key: realmCacheKey(for: configuration))
     }
-    
+
     @inline(__always)
     public func setCachedRealmIfNeeded(_ realm: Realm, for configuration: Realm.Configuration) async -> Realm {
         if let cachedRealm = await existingCachedRealm(for: configuration) {
@@ -46,7 +72,6 @@ public extension CachedRealmsActor where Self: Actor {
 
     @inline(__always)
     public func setCachedRealm(_ realm: Realm, for configuration: Realm.Configuration) async {
-        let key = cachedRealmKey(for: configuration)
-        await setCachedRealm(realm, key: key)
+        await setCachedRealm(realm, key: realmCacheKey(for: configuration))
     }
 }
