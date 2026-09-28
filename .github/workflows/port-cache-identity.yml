@@ -1,0 +1,47 @@
+name: Port Realm cache regressions
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: realm-cache-port-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  tests:
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.2.1'
+      - name: Record inputs and test full package
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/tested-commit.txt
+          git ls-tree -r HEAD > evidence/source-manifest.txt
+          swift --version > evidence/toolchain.txt
+          swift test -c ${{ matrix.configuration }} 2>&1 | tee evidence/test.log
+      - name: Retain reproducible sources and dependency resolution
+        if: always()
+        shell: bash
+        run: |
+          test ! -f Package.resolved || cp Package.resolved evidence/Package.resolved
+          tar -czf evidence/source.tar.gz Sources Tests Package.swift
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: realm-cache-port-${{ matrix.configuration }}-${{ github.run_attempt }}
+          path: evidence
+          retention-days: 7
+          if-no-files-found: error
