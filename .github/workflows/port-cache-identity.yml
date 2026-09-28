@@ -16,11 +16,13 @@ jobs:
       fail-fast: false
       matrix:
         configuration: [debug, release]
+        toolchain: [xcode, swift-6.2.1]
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - uses: swift-actions/setup-swift@v2
+        if: matrix.toolchain == 'swift-6.2.1'
         with:
           swift-version: '6.2.1'
       - name: Record inputs and test full package
@@ -30,13 +32,20 @@ jobs:
           mkdir -p evidence
           git rev-parse HEAD > evidence/tested-commit.txt
           git ls-tree -r HEAD > evidence/source-manifest.txt
-          swift --version > evidence/toolchain.txt
-          # Preserve standard package flags. Earlier implicit/textual-module
-          # workarounds did not fix Realm Core's s2geometry build failure.
-          # Verbose output retains the actual compiler invocation for diagnosis;
-          # a dependency failure remains a failing check, never a skipped test.
-          printf '%s\n' 'swift test -v' > evidence/build-options.txt
-          swift test -v -c ${{ matrix.configuration }} 2>&1 | tee evidence/test.log
+          if [[ '${{ matrix.toolchain }}' == xcode ]]; then
+            export DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer
+            compiler=(xcrun --toolchain XcodeDefault swift)
+            xcodebuild -version > evidence/xcode.txt
+          else
+            compiler=(swift)
+          fi
+          "${compiler[@]}" --version > evidence/toolchain.txt
+          # The independent Apple toolchain run distinguishes the OSS Clang
+          # module failure from this package's actual Swift/API/test behavior.
+          # Neither configuration patches Realm, disables features, changes a
+          # production requirement or suppresses a failed test/dependency build.
+          printf '%s ' "${compiler[@]}" test -v -c '${{ matrix.configuration }}' > evidence/build-options.txt
+          "${compiler[@]}" test -v -c '${{ matrix.configuration }}' 2>&1 | tee evidence/test.log
       - name: Retain reproducible sources and dependency resolution
         if: always()
         shell: bash
@@ -46,7 +55,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: realm-cache-port-${{ matrix.configuration }}-${{ github.run_attempt }}
+          name: realm-cache-port-${{ matrix.toolchain }}-${{ matrix.configuration }}-${{ github.run_attempt }}
           path: evidence
           retention-days: 7
           if-no-files-found: error
