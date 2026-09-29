@@ -5,6 +5,9 @@ import RealmSwift
 public protocol CachedRealmsActor: AnyObject {
     func getCachedRealm(key: String) async -> Realm?
     func setCachedRealm(_ realm: Realm, key: String) async
+    // Convenience accessors in constrained protocol extensions must dispatch
+    // to the actor's opener, including its in-flight initialization boundary.
+    func cachedRealm(for configuration: Realm.Configuration) async throws -> Realm
 }
 
 public extension CachedRealmsActor where Self: Actor {
