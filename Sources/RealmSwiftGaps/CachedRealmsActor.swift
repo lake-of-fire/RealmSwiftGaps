@@ -5,19 +5,27 @@ import RealmSwift
 public protocol CachedRealmsActor: AnyObject {
     func getCachedRealm(key: String) async -> Realm?
     func setCachedRealm(_ realm: Realm, key: String) async
+    // Convenience accessors in constrained protocol extensions must dispatch
+    // to the actor's opener, including its in-flight initialization boundary.
+    func cachedRealm(for configuration: Realm.Configuration) async throws -> Realm
 }
 
 public extension CachedRealmsActor where Self: Actor {
-    func realmCacheKey(for configuration: Realm.Configuration) -> String {
+    func realmCacheKey(
+        for configuration: Realm.Configuration,
+        includingFileResourceIdentifier: Bool = true
+    ) -> String {
         let storageIdentity: String
         if let inMemoryIdentifier = configuration.inMemoryIdentifier {
             storageIdentity = "memory:\(inMemoryIdentifier)"
         } else if let fileURL = configuration.fileURL {
             let standardizedURL = fileURL.standardizedFileURL
-            let resourceIdentifier = (try? standardizedURL.resourceValues(
-                forKeys: [.fileResourceIdentifierKey]
-            ).fileResourceIdentifier).map { String(describing: $0) }
-                ?? "missing"
+            let resourceIdentifier = includingFileResourceIdentifier
+                ? (try? standardizedURL.resourceValues(
+                    forKeys: [.fileResourceIdentifierKey]
+                ).fileResourceIdentifier).map { String(describing: $0) }
+                    ?? "missing"
+                : "pending"
             storageIdentity = "file:\(standardizedURL.path):\(resourceIdentifier)"
         } else {
             storageIdentity = "file:"
