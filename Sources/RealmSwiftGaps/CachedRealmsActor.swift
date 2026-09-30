@@ -30,10 +30,13 @@ public extension CachedRealmsActor where Self: Actor {
         } else {
             storageIdentity = "file:"
         }
-        let objectTypes = (configuration.objectTypes ?? [])
-            .map { "\($0.className()):\(String(reflecting: $0))" }
-            .sorted()
-            .joined(separator: ",")
+        // Automatic discovery and an explicit empty schema are different opens.
+        let objectTypes = configuration.objectTypes.map { types in
+            "explicit:" + types
+                .map { "\($0.className()):\(String(reflecting: $0))" }
+                .sorted()
+                .joined(separator: ",")
+        } ?? "all"
         let encryptionFingerprint = configuration.encryptionKey.map {
             SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
         } ?? "none"
@@ -41,6 +44,7 @@ public extension CachedRealmsActor where Self: Actor {
             storageIdentity,
             "schema:\(configuration.schemaVersion)",
             "readOnly:\(configuration.readOnly)",
+            "activeVersions:\(configuration.maximumNumberOfActiveVersions.map(String.init) ?? "default")",
             "deleteIfMigrationNeeded:\(configuration.deleteRealmIfMigrationNeeded)",
             "seed:\(configuration.seedFilePath?.standardizedFileURL.path ?? "none")",
             "encryption:\(encryptionFingerprint)",
@@ -48,14 +52,36 @@ public extension CachedRealmsActor where Self: Actor {
         ].joined(separator: "|")
     }
 
-    @inlinable
     func cachedRealm(for configuration: Realm.Configuration) async throws -> Realm {
-        if let cachedRealm = await existingCachedRealm(for: configuration) {
+        let originalKey = realmCacheKey(for: configuration)
+        let opensMissingFile = configuration.fileURL.map {
+            !FileManager.default.fileExists(atPath: $0.standardizedFileURL.path)
+        } ?? false
+        if let cachedRealm = await getCachedRealm(key: originalKey) {
+            guard realmCacheKey(for: configuration) == originalKey else {
+                throw RealmBackgroundActorError.realmFileChangedDuringOpen
+            }
             return cachedRealm
         }
-       
+
         let realm = try await Realm(configuration: configuration, actor: self)
-        return await setCachedRealmIfNeeded(realm, for: configuration)
+        let openedKey = realmCacheKey(for: configuration)
+        guard opensMissingFile || openedKey == originalKey else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
+        // Default conformers can suspend in their cache accessors too. Keep
+        // the admitted key across those awaits, rather than recomputing a new
+        // identity and publishing an old Realm under the replacement's key.
+        let existingRealm = await getCachedRealm(key: openedKey)
+        guard realmCacheKey(for: configuration) == openedKey else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
+        if let existingRealm { return existingRealm }
+        await setCachedRealm(realm, key: openedKey)
+        guard realmCacheKey(for: configuration) == openedKey else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
+        return realm
     }
     
     @inline(__always)

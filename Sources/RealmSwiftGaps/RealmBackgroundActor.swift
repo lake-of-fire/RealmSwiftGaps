@@ -5,6 +5,15 @@ extension Object: @unchecked Sendable { }
 
 public enum RealmBackgroundActorError: Error {
     case unableToResolveObject
+    case cachedRealmEvictedDuringOpen
+    case realmFileChangedDuringOpen
+}
+
+// Instance-scoped suspension points for deterministic cache lifecycle tests.
+enum RealmCacheOpenEvent: Hashable, Sendable {
+    case openedBeforePublication
+    case joinedPendingOpen
+    case waiterResolvedPendingOpen
 }
 
 @globalActor
@@ -12,6 +21,12 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     public static let shared = RealmBackgroundActor()
 
     public init() { }
+
+    init(openObserver: @escaping @Sendable (RealmCacheOpenEvent) async -> Void) {
+        self.openObserver = openObserver
+    }
+
+    private var openObserver: (@Sendable (RealmCacheOpenEvent) async -> Void)?
     
     public var cachedRealms = [String: RealmSwift.Realm]()
     // Realm's async actor-bound initializer suspends while the file/group is
@@ -19,7 +34,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     // first open has populated `cachedRealms`.  Keep the in-flight open on
     // the actor so startup callers share one initialization instead of
     // concurrently opening the same in-memory group.
-    private var pendingRealmOpens = [String: Task<RealmSwift.Realm, Error>]()
+    private var pendingRealmOpens = [String: Task<String, Error>]()
     
     public func getCachedRealm(key: String) async -> Realm? {
         return cachedRealms[key]
@@ -46,7 +61,14 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         )
         if let pendingOpen = pendingRealmOpens[key]
             ?? pendingRealmOpens[pendingKey] {
-            return try await pendingOpen.value
+            if let openObserver {
+                await openObserver(.joinedPendingOpen)
+            }
+            let openedKey = try await pendingOpen.value
+            if let openObserver {
+                await openObserver(.waiterResolvedPendingOpen)
+            }
+            return try realmForCompletedOpen(key: openedKey, configuration: configuration)
         }
 
         let opensMissingFile = configuration.fileURL.map {
@@ -54,31 +76,57 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         } ?? false
         let openKey = opensMissingFile ? pendingKey : key
 
-        let pendingOpen = Task {
-            try await RealmSwift.Realm(configuration: configuration, actor: self)
+        // Publish on the owning actor. A completed Task retains only a key,
+        // never a live Realm that can outlast eviction or file replacement.
+        let pendingOpen = Task { () throws -> String in
+            let realm = try await RealmSwift.Realm(configuration: configuration, actor: self)
+            if let openObserver {
+                await openObserver(.openedBeforePublication)
+            }
+            // First creation changes the identity, but an existing file must
+            // still match the identity captured before the suspended open.
+            let openedKey = realmCacheKey(for: configuration)
+            guard opensMissingFile || openedKey == key else {
+                throw RealmBackgroundActorError.realmFileChangedDuringOpen
+            }
+            if cachedRealms[openedKey] == nil {
+                cachedRealms[openedKey] = realm
+            }
+            return openedKey
         }
         pendingRealmOpens[openKey] = pendingOpen
         defer { pendingRealmOpens.removeValue(forKey: openKey) }
 
-        let realm = try await pendingOpen.value
-        // Opening a new disk Realm creates its file, changing the resource ID
-        // used by realmCacheKey. Store under the identity future lookups and
-        // explicit eviction will actually use.
-        let openedKey = realmCacheKey(for: configuration)
-        if let cachedRealm = cachedRealms[openedKey] {
-            return cachedRealm
+        let openedKey = try await pendingOpen.value
+        return try realmForCompletedOpen(key: openedKey, configuration: configuration)
+    }
+
+    private func realmForCompletedOpen(key: String, configuration: Realm.Configuration) throws -> Realm {
+        // Another actor turn can replace the file or evict the cache between
+        // publication and a waiter's resumption. Revalidate without suspension
+        // before resolving and returning the actor-owned Realm.
+        guard realmCacheKey(for: configuration) == key else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
         }
-        cachedRealms[openedKey] = realm
+        guard let realm = cachedRealms[key] else {
+            throw RealmBackgroundActorError.cachedRealmEvictedDuringOpen
+        }
         return realm
     }
 
     /// Releases an explicitly scoped Realm when its configuration is no longer
     /// needed. Production configurations remain cached for the actor lifetime,
     /// while callers that create transient configurations can bound their file
-    /// descriptor usage.
-    public func removeCachedRealm(for configuration: Realm.Configuration) {
+    /// descriptor usage. Call after users and pending opens/writes have quiesced,
+    /// before replacing its file. This does not close independently held Realms
+    /// or coordinate another actor/process. An active transaction is never evicted.
+    @discardableResult
+    public func removeCachedRealm(for configuration: Realm.Configuration) -> Bool {
         let key = realmCacheKey(for: configuration)
-        cachedRealms.removeValue(forKey: key)?.invalidate()
+        guard let realm = cachedRealms[key], !realm.isInWriteTransaction else { return false }
+        cachedRealms.removeValue(forKey: key)
+        realm.invalidate()
+        return true
     }
 
     public func run(_ operation: @escaping () async throws -> Void) async {
