@@ -242,7 +242,8 @@ final class RealmOpenFencingPortTests: XCTestCase {
             for: configuration
         )
 
-        XCTAssertEqual(await cache.openCount, 1)
+        let openCount = await cache.openCount
+        XCTAssertEqual(openCount, 1)
     }
 
     func testMissingFileCreationCoalescesWaiterUnderCreatedIdentity() async throws {
@@ -276,17 +277,19 @@ final class RealmOpenFencingPortTests: XCTestCase {
         await fulfillment(of: [barrier.joinObserved], timeout: 5)
         await barrier.releasePublication()
 
-        XCTAssertEqual(try await owner.value, [])
-        XCTAssertEqual(try await waiter.value, [])
+        let ownerIdentifiers = try await owner.value
+        let waiterIdentifiers = try await waiter.value
+        let openCount = await barrier.count(.openedBeforePublication)
+        let cacheCount = await cache.openFenceCachedRealmCount()
+        let removed = await cache.removeCachedRealm(
+            for: configurations.current
+        )
+        XCTAssertEqual(ownerIdentifiers, [])
+        XCTAssertEqual(waiterIdentifiers, [])
         XCTAssertNotEqual(missingKey, createdKey)
-        XCTAssertEqual(
-            await barrier.count(.openedBeforePublication),
-            1
-        )
-        XCTAssertEqual(await cache.openFenceCachedRealmCount(), 1)
-        XCTAssertTrue(
-            await cache.removeCachedRealm(for: configurations.current)
-        )
+        XCTAssertEqual(openCount, 1)
+        XCTAssertEqual(cacheCount, 1)
+        XCTAssertTrue(removed)
     }
 
     func testSuspendedExistingFileOpenRejectsReplacementForOwnerAndWaiter() async throws {
@@ -336,16 +339,18 @@ final class RealmOpenFencingPortTests: XCTestCase {
 
         await assertFileChanged(owner)
         await assertFileChanged(waiter)
+        let rejectedCacheCount = await cache.openFenceCachedRealmCount()
         XCTAssertNotEqual(originalKey, replacementKey)
-        XCTAssertEqual(await cache.openFenceCachedRealmCount(), 0)
+        XCTAssertEqual(rejectedCacheCount, 0)
 
         let successor = try await cache.openFenceIdentifiers(
             for: configurations.current
         )
-        XCTAssertEqual(successor, ["replacement"])
-        XCTAssertTrue(
-            await cache.removeCachedRealm(for: configurations.current)
+        let removed = await cache.removeCachedRealm(
+            for: configurations.current
         )
+        XCTAssertEqual(successor, ["replacement"])
+        XCTAssertTrue(removed)
     }
 
     func testPendingWaiterCannotRetainRealmAfterScopedEviction() async throws {
@@ -380,9 +385,10 @@ final class RealmOpenFencingPortTests: XCTestCase {
             timeout: 5
         )
 
-        XCTAssertTrue(
-            await cache.removeCachedRealm(for: configurations.current)
+        let removed = await cache.removeCachedRealm(
+            for: configurations.current
         )
+        XCTAssertTrue(removed)
         await barrier.releaseWaiter()
 
         do {
@@ -423,13 +429,12 @@ final class RealmOpenFencingPortTests: XCTestCase {
         await cache.releasePublication()
 
         await assertFileChanged(owner)
-        XCTAssertEqual(await cache.cachedRealmCount(), 0)
-        XCTAssertEqual(
-            try await cache.identifiers(
-                for: configurations.current
-            ),
-            ["replacement"]
+        let rejectedCacheCount = await cache.cachedRealmCount()
+        let successor = try await cache.identifiers(
+            for: configurations.current
         )
+        XCTAssertEqual(rejectedCacheCount, 0)
+        XCTAssertEqual(successor, ["replacement"])
     }
 
     func testActiveVersionLimitParticipatesInConfigurationIdentity() async {
@@ -441,9 +446,8 @@ final class RealmOpenFencingPortTests: XCTestCase {
         var limited = baseline
         limited.maximumNumberOfActiveVersions = 10
 
-        XCTAssertNotEqual(
-            await cache.realmCacheKey(for: baseline),
-            await cache.realmCacheKey(for: limited)
-        )
+        let baselineKey = await cache.realmCacheKey(for: baseline)
+        let limitedKey = await cache.realmCacheKey(for: limited)
+        XCTAssertNotEqual(baselineKey, limitedKey)
     }
 }
