@@ -403,6 +403,36 @@ final class RealmSwiftGapsTests: XCTestCase {
         try await assertIndependentWriteSurvivesOwnerCancellation(.scheduledReference)
     }
 
+    func test_cancelledIndependentWriter_doesNotMutateAndSettles() async throws {
+        let configuration = try diskConfigurations().current
+        let actor = RealmBackgroundActor.shared
+        _ = try await actor.seedWriteBoundaryFixture(for: configuration)
+        let start = WriteTransactionBarrier()
+        let writer = Task {
+            await start.hold()
+            try await actor.write(configuration: configuration) { realm in
+                XCTFail("Cancelled caller must not enter its independent mutation")
+                realm.object(ofType: FirstCachedRealmObject.self, forPrimaryKey: "first")?.value = 1
+            }
+        }
+        addTeardownBlock { @RealmBackgroundActor in
+            await start.release()
+            _ = await writer.result
+            _ = actor.removeCachedRealm(for: configuration)
+        }
+        await fulfillment(of: [start.entered], timeout: 5)
+        writer.cancel()
+        await start.release()
+        do {
+            try await writer.value
+            XCTFail("Cancelled caller must settle with cancellation")
+        } catch is CancellationError { }
+        let values = try await actor.committedWriteBoundaryValues(for: configuration)
+        XCTAssertEqual(values["first"], 0)
+        XCTAssertEqual(values["second"], 0)
+        await actor.removeCachedRealm(for: configuration)
+    }
+
     func test_deletedReferences_preserveIndependentHelperContracts() async throws {
         let configuration = try diskConfigurations().current
         let actor = RealmBackgroundActor.shared
