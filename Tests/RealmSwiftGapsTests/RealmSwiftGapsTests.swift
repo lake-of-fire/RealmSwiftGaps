@@ -286,7 +286,7 @@ final class RealmSwiftGapsTests: XCTestCase {
         addTeardownBlock { @RealmBackgroundActor in
             await barrier.release()
             _ = await owner.result
-            _ = actor.removeCachedRealm(for: configuration)
+            _ = await actor.removeCachedRealm(for: configuration)
         }
         await fulfillment(of: [barrier.entered], timeout: 5)
 
@@ -347,7 +347,7 @@ final class RealmSwiftGapsTests: XCTestCase {
             admission.cancel()
             _ = await admission.result
             try? await probe.joinScheduledWrite()
-            _ = actor.removeCachedRealm(for: configuration)
+            _ = await actor.removeCachedRealm(for: configuration)
         }
         await fulfillment(of: [submitted], timeout: 5)
         // Release even after a failed admission assertion so no writer or task
@@ -418,7 +418,7 @@ final class RealmSwiftGapsTests: XCTestCase {
         addTeardownBlock { @RealmBackgroundActor in
             await start.release()
             _ = await writer.result
-            _ = actor.removeCachedRealm(for: configuration)
+            _ = await actor.removeCachedRealm(for: configuration)
         }
         await fulfillment(of: [start.entered], timeout: 5)
         writer.cancel()
@@ -451,7 +451,9 @@ final class RealmSwiftGapsTests: XCTestCase {
         let missingReferences = try await actor.seedWriteBoundaryFixture(for: configuration)
         let arrayReferences = try await { @RealmBackgroundActor in
             let realm = try await actor.cachedRealm(for: configuration)
-            let references = realm.objects(FirstCachedRealmObject.self).map { ThreadSafeReference(to: $0) }
+            let references = Array(realm.objects(FirstCachedRealmObject.self).map {
+                ThreadSafeReference(to: $0)
+            })
             try await realm.asyncWrite { realm.delete(realm.objects(FirstCachedRealmObject.self)) }
             return references
         }()
