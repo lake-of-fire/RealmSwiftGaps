@@ -31,7 +31,7 @@ public extension Realm {
     }
 
     @discardableResult
-    static func writeAsync<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) -> Task<Void, Error> {
+    static func writeAsync<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) -> Task<Void, Swift.Error> {
         let ref = ThreadSafeReference(to: passedObject)
         return Task { @RealmBackgroundActor in
             do {
@@ -45,7 +45,7 @@ public extension Realm {
     }
     
     @discardableResult
-    static func writeAsync(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) -> Task<Void, Error> {
+    static func writeAsync(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) -> Task<Void, Swift.Error> {
         return Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
