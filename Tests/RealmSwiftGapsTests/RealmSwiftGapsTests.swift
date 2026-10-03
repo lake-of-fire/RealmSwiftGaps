@@ -185,6 +185,13 @@ private enum IndependentWriterEntryPoint: Equatable, Sendable {
 private final class IndependentWriteProbe {
     private(set) var executed = false
     private(set) var settled = false
+    private var scheduledWrite: Task<Void, Error>?
+
+    func ownScheduledWrite(_ task: Task<Void, Error>) { scheduledWrite = task }
+
+    func joinScheduledWrite() async throws {
+        try await scheduledWrite?.value
+    }
 
     func mutate(_ object: FirstCachedRealmObject) {
         executed = true
@@ -276,8 +283,10 @@ final class RealmSwiftGapsTests: XCTestCase {
         let barrier = WriteTransactionBarrier()
         let probe = await IndependentWriteProbe()
         let owner = Task { try await actor.holdCancelledTransaction(for: configuration, barrier: barrier) }
-        defer {
-            Task { await barrier.release() }
+        addTeardownBlock { @RealmBackgroundActor in
+            await barrier.release()
+            _ = await owner.result
+            _ = actor.removeCachedRealm(for: configuration)
         }
         await fulfillment(of: [barrier.entered], timeout: 5)
 
@@ -310,15 +319,17 @@ final class RealmSwiftGapsTests: XCTestCase {
                     probe.mutate(object)
                 }
             case .scheduledConfiguration:
-                Realm.writeAsync(configuration: configuration) { realm in
+                let task = Realm.writeAsync(configuration: configuration) { realm in
                     probe.mutateFirstObject(in: realm)
                 }
+                probe.ownScheduledWrite(task)
             case .scheduledReference:
                 let realm = try await actor.cachedRealm(for: configuration)
                 let object = try XCTUnwrap(realm.object(ofType: FirstCachedRealmObject.self, forPrimaryKey: "first"))
-                Realm.writeAsync(object, configuration: configuration) { _, object in
+                let task = Realm.writeAsync(object, configuration: configuration) { _, object in
                     probe.mutate(object)
                 }
+                probe.ownScheduledWrite(task)
             }
         }
         let submitted = XCTestExpectation(description: "Independent helper submitted or completed")
@@ -327,16 +338,30 @@ final class RealmSwiftGapsTests: XCTestCase {
                 for: configuration, probe: probe, observed: submitted
             )
         }
-        defer { admission.cancel() }
+        addTeardownBlock { @RealmBackgroundActor in
+            // XCTest teardown is asynchronous and joined, including failure paths.
+            // Release the owner before joining independent queued operations.
+            await barrier.release()
+            _ = await owner.result
+            _ = await independent.result
+            admission.cancel()
+            _ = await admission.result
+            try? await probe.joinScheduledWrite()
+            _ = actor.removeCachedRealm(for: configuration)
+        }
         await fulfillment(of: [submitted], timeout: 5)
         // Release even after a failed admission assertion so no writer or task
         // remains blocked by the fixture's deliberately suspended owner.
         await barrier.release()
-        try await owner.value
+        let ownerOutcome = await owner.result
         admission.cancel()
-        let completedBeforeRelease = try await admission.value
+        let admissionOutcome = await admission.result
+        let independentOutcome = await independent.result
+        try await probe.joinScheduledWrite()
+        try ownerOutcome.get()
+        try independentOutcome.get()
+        let completedBeforeRelease = try admissionOutcome.get()
         XCTAssertFalse(completedBeforeRelease, "Independent helper joined the cancelled owner's transaction")
-        try await independent.value
         let committed = try await actor.committedWriteBoundaryValues(for: configuration)
         XCTAssertEqual(committed["first"], 1)
         XCTAssertEqual(committed["second"], entryPoint == .asynchronousReferences ? 1 : 0)

@@ -30,9 +30,10 @@ public extension Realm {
         return try write(block)
     }
 
-    static func writeAsync<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) {
+    @discardableResult
+    static func writeAsync<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) -> Task<Void, Error> {
         let ref = ThreadSafeReference(to: passedObject)
-        Task { @RealmBackgroundActor in
+        return Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
                 try await realm.asyncWrite {
@@ -43,8 +44,9 @@ public extension Realm {
         }
     }
     
-    static func writeAsync(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) {
-        Task { @RealmBackgroundActor in
+    @discardableResult
+    static func writeAsync(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) -> Task<Void, Error> {
+        return Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
                 try await realm.asyncWrite {
