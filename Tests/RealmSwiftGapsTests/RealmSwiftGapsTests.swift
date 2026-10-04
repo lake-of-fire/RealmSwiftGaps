@@ -244,6 +244,23 @@ private extension RealmBackgroundActor {
         await barrier.hold()
     }
 
+    func holdTransactionAndObserveOwnership(
+        for configuration: Realm.Configuration,
+        barrier: WriteTransactionBarrier
+    ) async throws -> Bool {
+        let realm = try await cachedRealm(for: configuration)
+        try realm.beginWrite()
+        let object = FirstCachedRealmObject()
+        object.id = "cancelled-owner"
+        realm.add(object)
+        await barrier.hold()
+        let stillOwnsTransaction = realm.isInWriteTransaction
+        // Preserve the original failure if a queued caller aborts this owner;
+        // unconditional cancellation would raise a second Realm exception.
+        if stillOwnsTransaction { realm.cancelWrite() }
+        return stillOwnsTransaction
+    }
+
     func waitForIndependentWriteSubmission(
         probe: IndependentWriteProbe,
         observed: XCTestExpectation
@@ -712,6 +729,69 @@ final class RealmSwiftGapsTests: XCTestCase {
         let values = try await actor.committedWriteBoundaryValues(for: configuration)
         XCTAssertEqual(values["first"], 0)
         XCTAssertEqual(values["second"], 0)
+        await actor.removeCachedRealm(for: configuration)
+    }
+
+    func test_queuedCancellation_preservesOtherTasksOpenTransaction() async throws {
+        let configuration = try diskConfigurations().current
+        let actor = RealmBackgroundActor.shared
+        _ = try await actor.seedWriteBoundaryFixture(for: configuration)
+        let barrier = WriteTransactionBarrier()
+        let probe = await IndependentWriteProbe()
+        let owner = Task {
+            try await actor.holdTransactionAndObserveOwnership(for: configuration, barrier: barrier)
+        }
+        addTeardownBlock { @RealmBackgroundActor in
+            await barrier.release()
+            _ = await owner.result
+            _ = await actor.removeCachedRealm(for: configuration)
+        }
+        await fulfillment(of: [barrier.entered], timeout: 5)
+        let settled = XCTestExpectation(description: "Queued cancellation settled before owner release")
+        let caller = Task { @RealmBackgroundActor in
+            defer {
+                probe.markSettled()
+                settled.fulfill()
+            }
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+                Task { @RealmBackgroundActor in probe.markSubmitted() }
+            }) {
+                try await actor.write(configuration: configuration) { realm in
+                    probe.mutateFirstObject(in: realm)
+                }
+            }
+        }
+        let submitted = XCTestExpectation(description: "Caller queued behind actor owner")
+        let admission = Task {
+            try await actor.waitForIndependentWriteSubmission(probe: probe, observed: submitted)
+        }
+        addTeardownBlock { @RealmBackgroundActor in
+            await barrier.release()
+            caller.cancel()
+            admission.cancel()
+            _ = await owner.result
+            _ = await caller.result
+            _ = await admission.result
+            _ = await actor.removeCachedRealm(for: configuration)
+        }
+        await fulfillment(of: [submitted], timeout: 5)
+        caller.cancel()
+        await fulfillment(of: [settled], timeout: 5)
+        let didSettle = await probe.settled
+        let didExecute = await probe.executed
+        XCTAssertTrue(didSettle, "Cancellation must settle without waiting for another owner")
+        XCTAssertFalse(didExecute, "Cancelled caller must not enter its mutation")
+        await barrier.release()
+        let ownerRetainedTransaction = try await owner.value
+        XCTAssertTrue(ownerRetainedTransaction, "Queued cancellation must not abort another task's transaction")
+        admission.cancel()
+        _ = await admission.result
+        switch await caller.result {
+        case .success: XCTFail("Cancelled caller must throw CancellationError")
+        case .failure(let error): XCTAssertTrue(error is CancellationError, "Unexpected error: \(error)")
+        }
+        let values = try await actor.committedWriteBoundaryValues(for: configuration)
+        XCTAssertEqual(values, ["first": 0, "second": 0])
         await actor.removeCachedRealm(for: configuration)
     }
 
