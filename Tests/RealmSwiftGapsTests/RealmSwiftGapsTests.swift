@@ -183,6 +183,7 @@ private enum IndependentWriterEntryPoint: Equatable, Sendable {
 
 @RealmBackgroundActor
 private final class IndependentWriteProbe {
+    private(set) var submitted = false
     private(set) var executed = false
     private(set) var settled = false
     private var scheduledWrite: Task<Void, Error>?
@@ -208,6 +209,7 @@ private final class IndependentWriteProbe {
     }
 
     func markSettled() { settled = true }
+    func markSubmitted() { submitted = true }
     var completedBeforeRelease: Bool { executed || settled }
 }
 
@@ -241,19 +243,20 @@ private extension RealmBackgroundActor {
     }
 
     func waitForIndependentWriteSubmission(
-        for configuration: Realm.Configuration,
         probe: IndependentWriteProbe,
         observed: XCTestExpectation
     ) async throws -> Bool {
-        let realm = try await cachedRealm(for: configuration)
         // Wait for observable admission or premature execution, rather than
         // assuming Task scheduling order or using a negative timed expectation.
-        // The owning transaction was begun synchronously, so pending async work
-        // here can only belong to the independent helper under test.
+        // The task-local hook enqueues markSubmitted on this shared actor just
+        // before the helper calls the actor-isolated SDK asyncWrite. The SDK
+        // queues synchronously before suspending, so that observation turn
+        // cannot run until submission. Its async-status flag instead describes
+        // the current transaction and stays false for our synchronous owner.
         while true {
             try Task.checkCancellation()
             let completedBeforeRelease = await probe.completedBeforeRelease
-            if realm.isPerformingAsynchronousWriteOperations || completedBeforeRelease {
+            if await probe.submitted || completedBeforeRelease {
                 observed.fulfill()
                 return completedBeforeRelease
             }
@@ -291,51 +294,55 @@ final class RealmSwiftGapsTests: XCTestCase {
         await fulfillment(of: [barrier.entered], timeout: 5)
 
         let independent = Task { @RealmBackgroundActor in
-            defer {
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+                Task { @RealmBackgroundActor in probe.markSubmitted() }
+            }) {
+                defer {
+                    switch entryPoint {
+                    case .scheduledConfiguration, .scheduledReference: break
+                    default: probe.markSettled()
+                    }
+                }
                 switch entryPoint {
-                case .scheduledConfiguration, .scheduledReference: break
-                default: probe.markSettled()
+                case .actorConfiguration:
+                    try await actor.write(configuration: configuration) { realm in
+                        probe.mutateFirstObject(in: realm)
+                    }
+                case .actorReference:
+                    try await actor.write(references[0], configuration: configuration) { _, object in
+                        probe.mutate(object)
+                    }
+                case .asynchronousConfiguration:
+                    try await Realm.asyncWrite(configuration: configuration) { realm in
+                        probe.mutateFirstObject(in: realm)
+                    }
+                case .asynchronousReference:
+                    try await Realm.asyncWrite(references[0], configuration: configuration) { _, object in
+                        probe.mutate(object)
+                    }
+                case .asynchronousReferences:
+                    try await Realm.asyncWrite(references, configuration: configuration) { _, object in
+                        probe.mutate(object)
+                    }
+                case .scheduledConfiguration:
+                    let task = Realm.writeAsync(configuration: configuration) { realm in
+                        probe.mutateFirstObject(in: realm)
+                    }
+                    probe.ownScheduledWrite(task)
+                case .scheduledReference:
+                    let realm = try await actor.cachedRealm(for: configuration)
+                    let object = try XCTUnwrap(realm.object(ofType: FirstCachedRealmObject.self, forPrimaryKey: "first"))
+                    let task = Realm.writeAsync(object, configuration: configuration) { _, object in
+                        probe.mutate(object)
+                    }
+                    probe.ownScheduledWrite(task)
                 }
-            }
-            switch entryPoint {
-            case .actorConfiguration:
-                try await actor.write(configuration: configuration) { realm in
-                    probe.mutateFirstObject(in: realm)
-                }
-            case .actorReference:
-                try await actor.write(references[0], configuration: configuration) { _, object in
-                    probe.mutate(object)
-                }
-            case .asynchronousConfiguration:
-                try await Realm.asyncWrite(configuration: configuration) { realm in
-                    probe.mutateFirstObject(in: realm)
-                }
-            case .asynchronousReference:
-                try await Realm.asyncWrite(references[0], configuration: configuration) { _, object in
-                    probe.mutate(object)
-                }
-            case .asynchronousReferences:
-                try await Realm.asyncWrite(references, configuration: configuration) { _, object in
-                    probe.mutate(object)
-                }
-            case .scheduledConfiguration:
-                let task = Realm.writeAsync(configuration: configuration) { realm in
-                    probe.mutateFirstObject(in: realm)
-                }
-                probe.ownScheduledWrite(task)
-            case .scheduledReference:
-                let realm = try await actor.cachedRealm(for: configuration)
-                let object = try XCTUnwrap(realm.object(ofType: FirstCachedRealmObject.self, forPrimaryKey: "first"))
-                let task = Realm.writeAsync(object, configuration: configuration) { _, object in
-                    probe.mutate(object)
-                }
-                probe.ownScheduledWrite(task)
             }
         }
         let submitted = XCTestExpectation(description: "Independent helper submitted or completed")
         let admission = Task {
             try await actor.waitForIndependentWriteSubmission(
-                for: configuration, probe: probe, observed: submitted
+                probe: probe, observed: submitted
             )
         }
         addTeardownBlock { @RealmBackgroundActor in

@@ -36,6 +36,7 @@ public extension Realm {
         return Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                RealmWriteSubmissionObservation.willSubmit?()
                 try await realm.asyncWrite {
                     guard let object = realm.resolve(ref) else { return }
                     block(realm, object)
@@ -49,6 +50,7 @@ public extension Realm {
         return Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                RealmWriteSubmissionObservation.willSubmit?()
                 try await realm.asyncWrite {
                     block(realm)
                 }
@@ -61,6 +63,7 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                RealmWriteSubmissionObservation.willSubmit?()
                 try await realm.asyncWrite {
                     block(realm)
                 }
@@ -73,6 +76,7 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                RealmWriteSubmissionObservation.willSubmit?()
                 try await realm.asyncWrite {
                     guard let object = realm.resolve(passedObject) else { return }
                     block(realm, object)
@@ -86,6 +90,7 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration) 
+                RealmWriteSubmissionObservation.willSubmit?()
                 try await realm.asyncWrite {
                     let objects: [T] = passedObjects.compactMap {
                         realm.resolve($0)
