@@ -16,13 +16,10 @@ enum RealmCacheOpenEvent: Hashable, Sendable {
     case waiterResolvedPendingOpen
 }
 
-// Task-scoped fixture observation at the SDK submission boundary. An observer
-// may enqueue a turn on the owning actor, but must not suspend this caller:
-// Realm.asyncWrite queues its request before its first suspension on that actor.
-// Realm's isPerformingAsynchronousWriteOperations does not expose queued writes
-// behind a synchronous transaction. No observer is installed in normal use.
-enum RealmWriteSubmissionObservation {
-    @TaskLocal static var willSubmit: (@Sendable () -> Void)? = nil
+// Captured-admission tests suspend after the real open, before its identity is
+// handed to a mutation or another actor. Production installs no observation.
+enum RealmStorageAdmissionObservation {
+    @TaskLocal static var didOpenRealm: (@Sendable () async -> Void)? = nil
 }
 
 @globalActor
@@ -110,6 +107,31 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         return try realmForCompletedOpen(key: openedKey, configuration: configuration)
     }
 
+    public func cachedRealm(
+        for configuration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission
+    ) async throws -> Realm {
+        try Task.checkCancellation()
+        try storageAdmission.admitCreation(configuration: configuration) {
+            realmCacheKey(for: configuration)
+        }
+        let realm = try await cachedRealm(for: configuration)
+        if let didOpenRealm = RealmStorageAdmissionObservation.didOpenRealm { await didOpenRealm() }
+        guard storageAdmission.matchesCurrentStorageIdentity({ realmCacheKey(for: configuration) }) else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
+        return realm
+    }
+
+    /// Read actors may prepare the captured store without receiving a Realm
+    /// belonging to this writer actor. They open their own instance afterward.
+    public func prepareStorage(
+        for configuration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission
+    ) async throws {
+        _ = try await cachedRealm(for: configuration, storageAdmission: storageAdmission)
+    }
+
     private func realmForCompletedOpen(key: String, configuration: Realm.Configuration) throws -> Realm {
         // Another actor turn can replace the file or evict the cache between
         // publication and a waiter's resumption. Revalidate without suspension
@@ -148,20 +170,16 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     
     public func write(configuration: Realm.Configuration, operation: @escaping (Realm) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
-        // Actor reentrancy can expose another task's admitted transaction.
-        // Independent operations must queue their own transaction instead of joining it.
-        try Task.checkCancellation()
-        RealmWriteSubmissionObservation.willSubmit?()
-        try await realm.asyncWrite {
-            try operation(realm)
-        }
+        try await write(in: realm, operation: operation)
     }
-    
+
+    func write(in realm: Realm, operation: (Realm) throws -> Void) async throws {
+        try await realm.asyncWritePreservingOwnership { try operation(realm) }
+    }
+
     public func write<T: ThreadConfined>(_ reference: ThreadSafeReference<T>, configuration: Realm.Configuration, operation: @escaping (Realm, T) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
-        try Task.checkCancellation()
-        RealmWriteSubmissionObservation.willSubmit?()
-        try await realm.asyncWrite {
+        try await write(in: realm) { realm in
             guard let resolvedObject = realm.resolve(reference) else {
                 throw RealmBackgroundActorError.unableToResolveObject
             }
