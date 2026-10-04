@@ -2,7 +2,11 @@
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/realm-write-admission.XXXXXX")"
-trap 'rm -rf "$scratch"' EXIT
+preserve_scratch() {
+    mkdir -p "$HOME/.Trash"
+    mv "$scratch" "$HOME/.Trash/"
+}
+trap preserve_scratch EXIT
 mkdir -p "$scratch/Sources/RealmSwiftGaps" "$scratch/Tests/RealmSwiftGapsTests"
 # Compile the exact production signal and owning tests, not a second model.
 # This intentionally excludes Realm.Private and cannot qualify the SDK bridge.

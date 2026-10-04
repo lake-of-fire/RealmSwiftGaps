@@ -16,6 +16,12 @@ enum RealmCacheOpenEvent: Hashable, Sendable {
     case waiterResolvedPendingOpen
 }
 
+// Captured-admission tests suspend after the real open, before its identity is
+// handed to a mutation or another actor. Production installs no observation.
+enum RealmStorageAdmissionObservation {
+    @TaskLocal static var didOpenRealm: (@Sendable () async -> Void)? = nil
+}
+
 @globalActor
 public actor RealmBackgroundActor: CachedRealmsActor {
     public static let shared = RealmBackgroundActor()
@@ -99,6 +105,31 @@ public actor RealmBackgroundActor: CachedRealmsActor {
 
         let openedKey = try await pendingOpen.value
         return try realmForCompletedOpen(key: openedKey, configuration: configuration)
+    }
+
+    public func cachedRealm(
+        for configuration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission
+    ) async throws -> Realm {
+        try Task.checkCancellation()
+        try storageAdmission.admitCreation(configuration: configuration) {
+            realmCacheKey(for: configuration)
+        }
+        let realm = try await cachedRealm(for: configuration)
+        if let didOpenRealm = RealmStorageAdmissionObservation.didOpenRealm { await didOpenRealm() }
+        guard storageAdmission.matchesCurrentStorageIdentity({ realmCacheKey(for: configuration) }) else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
+        return realm
+    }
+
+    /// Read actors may prepare the captured store without receiving a Realm
+    /// belonging to this writer actor. They open their own instance afterward.
+    public func prepareStorage(
+        for configuration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission
+    ) async throws {
+        _ = try await cachedRealm(for: configuration, storageAdmission: storageAdmission)
     }
 
     private func realmForCompletedOpen(key: String, configuration: Realm.Configuration) throws -> Realm {
