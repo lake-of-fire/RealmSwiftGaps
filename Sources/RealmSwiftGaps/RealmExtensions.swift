@@ -36,9 +36,7 @@ public extension Realm {
         return Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try Task.checkCancellation()
-                RealmWriteSubmissionObservation.willSubmit?()
-                try await realm.asyncWrite {
+                try await RealmBackgroundActor.shared.write(in: realm) { realm in
                     guard let object = realm.resolve(ref) else { return }
                     block(realm, object)
                 }
@@ -51,9 +49,7 @@ public extension Realm {
         return Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try Task.checkCancellation()
-                RealmWriteSubmissionObservation.willSubmit?()
-                try await realm.asyncWrite {
+                try await RealmBackgroundActor.shared.write(in: realm) { realm in
                     block(realm)
                 }
             }
@@ -65,9 +61,7 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try Task.checkCancellation()
-                RealmWriteSubmissionObservation.willSubmit?()
-                try await realm.asyncWrite {
+                try await RealmBackgroundActor.shared.write(in: realm) { realm in
                     block(realm)
                 }
             }
@@ -79,9 +73,7 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try Task.checkCancellation()
-                RealmWriteSubmissionObservation.willSubmit?()
-                try await realm.asyncWrite {
+                try await RealmBackgroundActor.shared.write(in: realm) { realm in
                     guard let object = realm.resolve(passedObject) else { return }
                     block(realm, object)
                 }
@@ -94,9 +86,7 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration) 
-                try Task.checkCancellation()
-                RealmWriteSubmissionObservation.willSubmit?()
-                try await realm.asyncWrite {
+                try await RealmBackgroundActor.shared.write(in: realm) { realm in
                     let objects: [T] = passedObjects.compactMap {
                         realm.resolve($0)
                     }

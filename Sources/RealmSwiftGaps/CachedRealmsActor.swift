@@ -11,7 +11,7 @@ public protocol CachedRealmsActor: AnyObject {
 }
 
 public extension CachedRealmsActor where Self: Actor {
-    func realmCacheKey(
+    nonisolated func realmCacheKey(
         for configuration: Realm.Configuration,
         includingFileResourceIdentifier: Bool = true
     ) -> String {
