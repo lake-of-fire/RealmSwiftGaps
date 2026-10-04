@@ -190,6 +190,8 @@ private final class IndependentWriteProbe {
 
     func ownScheduledWrite(_ task: Task<Void, Error>) { scheduledWrite = task }
 
+    func cancelScheduledWrite() { scheduledWrite?.cancel() }
+
     func joinScheduledWrite() async throws {
         try await scheduledWrite?.value
     }
@@ -275,7 +277,280 @@ private extension RealmBackgroundActor {
     }
 }
 
+// Supported SDK use: this queue opens and owns a thread-confined Realm, and
+// performs its entire synchronous write without a Task or suspension. Only
+// configuration, result values, and synchronization primitives leave the queue.
+private final class ExternalSynchronousWriter: @unchecked Sendable {
+    let entered = XCTestExpectation(description: "External synchronous owner holds write")
+    private let queue = DispatchQueue(label: "RealmSwiftGapsTests.external-owner", autoreleaseFrequency: .workItem)
+    private let releaseSemaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var released = false
+    private var held = false
+    private var outcome: Result<[String: Int], Error>?
+    private var submissionObservation: Task<Void, Never>?
+
+    func start(configuration: Realm.Configuration) {
+        queue.async {
+            let result = Result { () throws -> [String: Int] in
+                let realm = try Realm(configuration: configuration)
+                try realm.write {
+                    let owner = FirstCachedRealmObject()
+                    owner.id = "external-synchronous-owner"
+                    owner.value = 77
+                    realm.add(owner)
+                    self.lock.lock()
+                    self.held = true
+                    self.lock.unlock()
+                    self.entered.fulfill()
+                    // Guaranteed asynchronous XCTest teardown always signals
+                    // this task-owned semaphore, including assertion failures.
+                    self.releaseSemaphore.wait()
+                }
+                return Dictionary(uniqueKeysWithValues:
+                    realm.objects(FirstCachedRealmObject.self).map { ($0.id, $0.value) }
+                )
+            }
+            self.lock.lock()
+            self.held = false
+            self.outcome = result
+            self.lock.unlock()
+        }
+    }
+
+    var isHeld: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return held
+    }
+
+    func release() {
+        lock.lock()
+        let shouldSignal = !released
+        released = true
+        lock.unlock()
+        if shouldSignal { releaseSemaphore.signal() }
+    }
+
+    func retainSubmissionObservation(_ task: Task<Void, Never>) {
+        lock.lock()
+        submissionObservation = task
+        lock.unlock()
+    }
+
+    private func observationTask() -> Task<Void, Never>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return submissionObservation
+    }
+
+    func joinObservation() async { await observationTask()?.value }
+
+    func join() async -> Result<[String: Int], Error> {
+        // A continuation queued after the writer joins all of its queue work.
+        // The queue-local Realm has already left scope before this returns.
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.lock.lock()
+                let result = self.outcome!
+                self.lock.unlock()
+                continuation.resume(returning: result)
+            }
+        }
+    }
+}
+
+private extension RealmBackgroundActor {
+    func readWriteBoundaryValues(for configuration: Realm.Configuration) async throws -> [String: Int] {
+        let realm = try await cachedRealm(for: configuration)
+        realm.refresh()
+        return Dictionary(uniqueKeysWithValues:
+            realm.objects(FirstCachedRealmObject.self).map { ($0.id, $0.value) }
+        )
+    }
+}
+
 final class RealmSwiftGapsTests: XCTestCase {
+
+    private func assertCancelledCallerBehindExternalSynchronousOwner(
+        _ entryPoint: IndependentWriterEntryPoint,
+        preCancelled: Bool = false
+    ) async throws {
+        let configuration = try diskConfigurations().current
+        let actor = RealmBackgroundActor.shared
+        let references = try await actor.seedWriteBoundaryFixture(for: configuration)
+        let external = ExternalSynchronousWriter()
+        // Install guaranteed release/join before dispatching the owner.
+        addTeardownBlock { @RealmBackgroundActor in
+            external.release()
+            _ = await external.join()
+            await external.joinObservation()
+            _ = await actor.removeCachedRealm(for: configuration)
+        }
+        external.start(configuration: configuration)
+        await fulfillment(of: [external.entered], timeout: 5)
+        XCTAssertTrue(external.isHeld)
+
+        let probe = await IndependentWriteProbe()
+        let settled = XCTestExpectation(description: "Cancelled public helper settled")
+        let start = WriteTransactionBarrier()
+        let caller = Task { @RealmBackgroundActor in
+            defer {
+                probe.markSettled()
+                settled.fulfill()
+            }
+            if preCancelled { await start.hold() }
+            try await RealmWriteSubmissionObservation.$willSubmit.withValue({
+                // Preserve the original task-scoped, non-suspending observer:
+                // its actor turn runs after the SDK has queued the request.
+                let observation = Task { @RealmBackgroundActor in probe.markSubmitted() }
+                external.retainSubmissionObservation(observation)
+            }) {
+                switch entryPoint {
+                case .actorConfiguration:
+                    try await actor.write(configuration: configuration) { realm in
+                        probe.mutateFirstObject(in: realm)
+                    }
+                case .actorReference:
+                    try await actor.write(references[0], configuration: configuration) { _, object in
+                        probe.mutate(object)
+                    }
+                case .asynchronousConfiguration:
+                    try await Realm.asyncWrite(configuration: configuration) { realm in
+                        probe.mutateFirstObject(in: realm)
+                    }
+                case .asynchronousReference:
+                    try await Realm.asyncWrite(references[0], configuration: configuration) { _, object in
+                        probe.mutate(object)
+                    }
+                case .asynchronousReferences:
+                    try await Realm.asyncWrite(references, configuration: configuration) { _, object in
+                        probe.mutate(object)
+                    }
+                case .scheduledConfiguration:
+                    let task = Realm.writeAsync(configuration: configuration) { realm in
+                        probe.mutateFirstObject(in: realm)
+                    }
+                    probe.ownScheduledWrite(task)
+                    try await task.value
+                case .scheduledReference:
+                    let realm = try await actor.cachedRealm(for: configuration)
+                    let object = try XCTUnwrap(realm.resolve(references[0]))
+                    let task = Realm.writeAsync(object, configuration: configuration) { _, object in
+                        probe.mutate(object)
+                    }
+                    probe.ownScheduledWrite(task)
+                    try await task.value
+                }
+            }
+        }
+        var admission: Task<Bool, Error>?
+        addTeardownBlock { @RealmBackgroundActor in
+            external.release()
+            await start.release()
+            caller.cancel()
+            probe.cancelScheduledWrite()
+            _ = await external.join()
+            _ = await caller.result
+            await external.joinObservation()
+            _ = await actor.removeCachedRealm(for: configuration)
+        }
+        if preCancelled {
+            await fulfillment(of: [start.entered], timeout: 5)
+            caller.cancel()
+            await start.release()
+        } else {
+            let submitted = XCTestExpectation(description: "Public helper queued behind external owner")
+            let waiter = Task {
+                try await actor.waitForIndependentWriteSubmission(probe: probe, observed: submitted)
+            }
+            admission = waiter
+            addTeardownBlock {
+                external.release()
+                waiter.cancel()
+                _ = await waiter.result
+            }
+            await fulfillment(of: [submitted], timeout: 5)
+            let didSubmit = await probe.submitted
+            let didExecute = await probe.executed
+            XCTAssertTrue(didSubmit)
+            XCTAssertFalse(didExecute)
+            switch entryPoint {
+            case .scheduledConfiguration, .scheduledReference:
+                // Cancelling the launcher would not cancel its unstructured
+                // child; cancel the actual public returned scheduled Task.
+                await probe.cancelScheduledWrite()
+            default:
+                caller.cancel()
+            }
+        }
+        await fulfillment(of: [settled], timeout: 5)
+        let didSettle = await probe.settled
+        let didExecute = await probe.executed
+        XCTAssertTrue(didSettle, "Cancellation must settle before external owner release")
+        XCTAssertFalse(didExecute, "Cancelled caller must never enter its mutation callback")
+        XCTAssertTrue(external.isHeld, "External owner must still hold its synchronous transaction")
+        if preCancelled {
+            let didSubmit = await probe.submitted
+            XCTAssertFalse(didSubmit, "Pre-cancelled caller must not submit an SDK write")
+        }
+        let heldValues = try await actor.readWriteBoundaryValues(for: configuration)
+        XCTAssertEqual(heldValues, ["first": 0, "second": 0])
+
+        // Release before joining outcomes, even when a bounded expectation
+        // failed, so a failing cancellation regression cannot strand a writer.
+        external.release()
+        let ownerOutcome = await external.join()
+        admission?.cancel()
+        _ = await admission?.result
+        let callerOutcome = await caller.result
+        await external.joinObservation()
+        switch callerOutcome {
+        case .success: XCTFail("Cancelled public helper must throw CancellationError")
+        case .failure(let error): XCTAssertTrue(error is CancellationError, "Unexpected error: \(error)")
+        }
+        let expected = ["first": 0, "second": 0, "external-synchronous-owner": 77]
+        XCTAssertEqual(try ownerOutcome.get(), expected)
+        let removed = await actor.removeCachedRealm(for: configuration)
+        XCTAssertTrue(removed)
+        // The queue has joined and its Realm has left scope. Reopen the disk
+        // Realm after cache eviction, then check both durable owner and no-op caller.
+        let reopened = try await actor.readWriteBoundaryValues(for: configuration)
+        XCTAssertEqual(reopened, expected)
+        await actor.removeCachedRealm(for: configuration)
+    }
+
+    func test_actorConfigurationWrite_cancelledCallerSettlesBehindExternalSynchronousOwner() async throws {
+        try await assertCancelledCallerBehindExternalSynchronousOwner(.actorConfiguration)
+    }
+
+    func test_actorReferenceWrite_cancelledCallerSettlesBehindExternalSynchronousOwner() async throws {
+        try await assertCancelledCallerBehindExternalSynchronousOwner(.actorReference)
+    }
+
+    func test_staticConfigurationWrite_cancelledCallerSettlesBehindExternalSynchronousOwner() async throws {
+        try await assertCancelledCallerBehindExternalSynchronousOwner(.asynchronousConfiguration)
+    }
+
+    func test_staticReferenceWrite_cancelledCallerSettlesBehindExternalSynchronousOwner() async throws {
+        try await assertCancelledCallerBehindExternalSynchronousOwner(.asynchronousReference)
+    }
+
+    func test_staticReferencesWrite_cancelledCallerSettlesBehindExternalSynchronousOwner() async throws {
+        try await assertCancelledCallerBehindExternalSynchronousOwner(.asynchronousReferences)
+    }
+
+    func test_scheduledConfigurationWrite_cancelledCallerSettlesBehindExternalSynchronousOwner() async throws {
+        try await assertCancelledCallerBehindExternalSynchronousOwner(.scheduledConfiguration)
+    }
+
+    func test_scheduledReferenceWrite_cancelledCallerSettlesBehindExternalSynchronousOwner() async throws {
+        try await assertCancelledCallerBehindExternalSynchronousOwner(.scheduledReference)
+    }
+
+    func test_actorConfigurationWrite_preCancelledCallerSkipsSubmissionBehindExternalSynchronousOwner() async throws {
+        try await assertCancelledCallerBehindExternalSynchronousOwner(.actorConfiguration, preCancelled: true)
+    }
 
     private func assertIndependentWriteSurvivesOwnerCancellation(
         _ entryPoint: IndependentWriterEntryPoint

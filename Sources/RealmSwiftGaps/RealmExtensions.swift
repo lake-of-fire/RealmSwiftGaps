@@ -36,6 +36,7 @@ public extension Realm {
         return Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Task.checkCancellation()
                 RealmWriteSubmissionObservation.willSubmit?()
                 try await realm.asyncWrite {
                     guard let object = realm.resolve(ref) else { return }
@@ -50,6 +51,7 @@ public extension Realm {
         return Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Task.checkCancellation()
                 RealmWriteSubmissionObservation.willSubmit?()
                 try await realm.asyncWrite {
                     block(realm)
@@ -63,6 +65,7 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Task.checkCancellation()
                 RealmWriteSubmissionObservation.willSubmit?()
                 try await realm.asyncWrite {
                     block(realm)
@@ -76,6 +79,7 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                try Task.checkCancellation()
                 RealmWriteSubmissionObservation.willSubmit?()
                 try await realm.asyncWrite {
                     guard let object = realm.resolve(passedObject) else { return }
@@ -90,6 +94,7 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration) 
+                try Task.checkCancellation()
                 RealmWriteSubmissionObservation.willSubmit?()
                 try await realm.asyncWrite {
                     let objects: [T] = passedObjects.compactMap {

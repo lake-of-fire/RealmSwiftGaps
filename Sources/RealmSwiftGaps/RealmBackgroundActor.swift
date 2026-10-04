@@ -150,6 +150,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         let realm = try await cachedRealm(for: configuration)
         // Actor reentrancy can expose another task's admitted transaction.
         // Independent operations must queue their own transaction instead of joining it.
+        try Task.checkCancellation()
         RealmWriteSubmissionObservation.willSubmit?()
         try await realm.asyncWrite {
             try operation(realm)
@@ -158,6 +159,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     
     public func write<T: ThreadConfined>(_ reference: ThreadSafeReference<T>, configuration: Realm.Configuration, operation: @escaping (Realm, T) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
+        try Task.checkCancellation()
         RealmWriteSubmissionObservation.willSubmit?()
         try await realm.asyncWrite {
             guard let resolvedObject = realm.resolve(reference) else {
