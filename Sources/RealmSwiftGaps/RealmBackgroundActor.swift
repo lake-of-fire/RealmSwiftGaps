@@ -16,6 +16,15 @@ enum RealmCacheOpenEvent: Hashable, Sendable {
     case waiterResolvedPendingOpen
 }
 
+// Task-scoped fixture observation at the SDK submission boundary. An observer
+// may enqueue a turn on the owning actor, but must not suspend this caller:
+// Realm.asyncWrite queues its request before its first suspension on that actor.
+// Realm's isPerformingAsynchronousWriteOperations does not expose queued writes
+// behind a synchronous transaction. No observer is installed in normal use.
+enum RealmWriteSubmissionObservation {
+    @TaskLocal static var willSubmit: (@Sendable () -> Void)? = nil
+}
+
 @globalActor
 public actor RealmBackgroundActor: CachedRealmsActor {
     public static let shared = RealmBackgroundActor()
@@ -139,16 +148,23 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     
     public func write(configuration: Realm.Configuration, operation: @escaping (Realm) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
-        try realm.writeIfNeeded {
+        // Actor reentrancy can expose another task's admitted transaction.
+        // Independent operations must queue their own transaction instead of joining it.
+        try Task.checkCancellation()
+        RealmWriteSubmissionObservation.willSubmit?()
+        try await realm.asyncWrite {
             try operation(realm)
         }
     }
     
     public func write<T: ThreadConfined>(_ reference: ThreadSafeReference<T>, configuration: Realm.Configuration, operation: @escaping (Realm, T) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
-        guard let resolvedObject = realm.resolve(reference) else { throw RealmBackgroundActorError.unableToResolveObject }
-        
-        try realm.writeIfNeeded {
+        try Task.checkCancellation()
+        RealmWriteSubmissionObservation.willSubmit?()
+        try await realm.asyncWrite {
+            guard let resolvedObject = realm.resolve(reference) else {
+                throw RealmBackgroundActorError.unableToResolveObject
+            }
             try operation(realm, resolvedObject)
         }
     }
