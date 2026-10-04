@@ -23,4 +23,4 @@ let package = Package(
     ]
 )
 SWIFT
-swift test --package-path "$scratch"
+swift test --package-path "$scratch" --jobs 1 "$@"

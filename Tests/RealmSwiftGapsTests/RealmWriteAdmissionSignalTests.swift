@@ -5,13 +5,16 @@ import XCTest
 /// Exercises the production signal without Realm, a simulator, sleeps or actor
 /// scheduling guesses. SDK/transaction behavior remains covered by the owning
 /// Realm tests; a signal-only pass cannot qualify the private SDK bridge.
+// Each test uses only local signal state. Nonisolated entry points and a
+// static helper avoid transferring XCTestCase across actor boundaries during
+// SwiftPM discovery, without unchecked Sendable conformance on the test case.
 @MainActor
 final class RealmWriteAdmissionSignalTests: XCTestCase {
     private enum Event {
         case registerWaiter, admit, cancel
     }
 
-    private func admitted(after events: [Event]) async -> Bool {
+    nonisolated private static func admitted(after events: [Event]) async -> Bool {
         let signal = RealmWriteAdmissionSignal()
         await withCheckedContinuation { continuation in
             for event in events {
@@ -25,27 +28,27 @@ final class RealmWriteAdmissionSignalTests: XCTestCase {
         return signal.disarmAndTakeAdmission()
     }
 
-    func testAdmissionBeforeAndAfterWaiterRegistration() async {
+    nonisolated func testAdmissionBeforeAndAfterWaiterRegistration() async {
         for events: [Event] in [
             [.admit, .registerWaiter],
             [.registerWaiter, .admit],
         ] {
-            let ownsTransaction = await admitted(after: events)
+            let ownsTransaction = await Self.admitted(after: events)
             XCTAssertTrue(ownsTransaction)
         }
     }
 
-    func testCancellationBeforeAndAfterWaiterRegistrationDoesNotGrantOwnership() async {
+    nonisolated func testCancellationBeforeAndAfterWaiterRegistrationDoesNotGrantOwnership() async {
         for events: [Event] in [
             [.cancel, .registerWaiter],
             [.registerWaiter, .cancel],
         ] {
-            let ownsTransaction = await admitted(after: events)
+            let ownsTransaction = await Self.admitted(after: events)
             XCTAssertFalse(ownsTransaction)
         }
     }
 
-    func testEveryRegistrationAdmissionCancellationOrderPreservesActualAdmission() async {
+    nonisolated func testEveryRegistrationAdmissionCancellationOrderPreservesActualAdmission() async {
         // Cancellation wakes the caller, but actual admission before the owner
         // resumes still grants rollback rights. Cancellation is not ownership.
         for events: [Event] in [
@@ -56,12 +59,12 @@ final class RealmWriteAdmissionSignalTests: XCTestCase {
             [.cancel, .registerWaiter, .admit],
             [.cancel, .admit, .registerWaiter],
         ] {
-            let ownsTransaction = await admitted(after: events)
+            let ownsTransaction = await Self.admitted(after: events)
             XCTAssertTrue(ownsTransaction)
         }
     }
 
-    func testDisarmRejectsSyntheticSDKCallbackAfterQueuedCancellation() async {
+    nonisolated func testDisarmRejectsSyntheticSDKCallbackAfterQueuedCancellation() async {
         let signal = RealmWriteAdmissionSignal()
         await withCheckedContinuation { continuation in
             signal.wait(continuation)
@@ -75,7 +78,7 @@ final class RealmWriteAdmissionSignalTests: XCTestCase {
         XCTAssertFalse(signal.disarmAndTakeAdmission())
     }
 
-    func testDisarmPreservesAdmissionDespiteLateCancellationAndCallbacks() async {
+    nonisolated func testDisarmPreservesAdmissionDespiteLateCancellationAndCallbacks() async {
         let signal = RealmWriteAdmissionSignal()
         await withCheckedContinuation { continuation in
             signal.wait(continuation)
@@ -87,21 +90,21 @@ final class RealmWriteAdmissionSignalTests: XCTestCase {
         XCTAssertTrue(signal.disarmAndTakeAdmission())
     }
 
-    func testRepeatedEventsResumeRegisteredContinuationOnlyOnce() async {
-        let ownsTransaction = await admitted(after: [
+    nonisolated func testRepeatedEventsResumeRegisteredContinuationOnlyOnce() async {
+        let ownsTransaction = await Self.admitted(after: [
             .registerWaiter, .cancel, .cancel, .admit, .admit, .cancel,
         ])
         XCTAssertTrue(ownsTransaction)
     }
 
-    func testRepeatedEventsBeforeRegistrationStillSettleWaiter() async {
-        let ownsTransaction = await admitted(after: [
+    nonisolated func testRepeatedEventsBeforeRegistrationStillSettleWaiter() async {
+        let ownsTransaction = await Self.admitted(after: [
             .cancel, .cancel, .admit, .admit, .registerWaiter, .cancel,
         ])
         XCTAssertTrue(ownsTransaction)
     }
 
-    func testConcurrentAdmissionAndCancellationPreserveOwnershipAndResumeOnce() async {
+    nonisolated func testConcurrentAdmissionAndCancellationPreserveOwnershipAndResumeOnce() async {
         for _ in 0..<64 {
             let signal = RealmWriteAdmissionSignal()
             await withCheckedContinuation { continuation in

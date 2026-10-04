@@ -74,6 +74,51 @@ files also require native discovery/inventory reconciliation wherever the Reader
 qualification runner uses an explicit file or method inventory rather than Swift
 Package discovery. No native test, full build or application result is claimed.
 
+## Further SDK and strict-concurrency review
+
+The pinned Swift SDK's `dependencies.list` selects Realm Core v20.1.5. Review of
+that tag's `src/realm/object-store/shared_realm.cpp` confirms the boundary beneath
+the Swift adapter: `run_writes` begins the transaction, delivers the notify-only
+callback, and returns with the admitted transaction awaiting its owner. Cancelling
+a queued begin removes that ticket; cancelling a queued commit instead removes
+only its completion callback. The latter is not rollback. This supports retaining
+admission-specific rollback and awaiting durable settlement after submission,
+not introducing another task/queue or cancelling the commit notification.
+
+Source: https://github.com/realm/realm-core/blob/v20.1.5/src/realm/object-store/shared_realm.cpp
+Reviewed blob: `db7048ecb979d68aa94f6b95e92c8c8ec7caa8a6`.
+This is pinned-source review, not execution of the C++ or native Realm boundary.
+
+A stronger Swift 6 language-mode/warnings-as-errors probe of the original eight
+tests failed during generated XCTest discovery, before any test ran. Their
+actor-isolated async instance methods unnecessarily transferred XCTestCase across
+that discovery boundary. The original default-mode pass above remains historical;
+this failure is not a Realm writer failure or an application compiler result.
+
+The tests now use nonisolated entry points and a static nonisolated helper. All
+signal state is local to the method. The test case gains no unchecked Sendable
+conformance; every original method name, assertion, event ordering and concurrent
+iteration count remains. Production signal and SDK bridge source are unchanged.
+
+The revised eight tests pass with Linux Swift 6.2.1 in strict Swift 6 unoptimized
+and optimized configurations. Removing only the production signal's disarm guard
+in a separate negative-control copy gives seven passes and one expected assertion
+failure at `testDisarmRejectsSyntheticSDKCallbackAfterQueuedCancellation`, with
+identical test bytes. Repeated configurations do not add unique tests. None of
+these results qualify native admission, transaction rollback/durability, Apple
+actor scheduling, the full package or the application.
+
+The runner keeps its tools-version 5.9 manifest, bounds compilation to one job,
+and forwards additional Swift test flags. Reproduce the strict probe with:
+
+```sh
+bash Scripts/test-write-admission.sh -Xswiftc -swift-version -Xswiftc 6 -Xswiftc -warnings-as-errors
+```
+
+Add `--configuration release` for the optimized portable harness only, not
+application Release qualification. Required native owner/cancellation/durability
+coverage and Reader source/method discovery remain unchanged and outstanding.
+
 ## Integration
 
 Review/merge #9 before this stacked extraction, or preserve both commits in the
