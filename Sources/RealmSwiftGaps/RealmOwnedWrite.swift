@@ -57,19 +57,8 @@ private enum RealmOwnedWriteBridge {
             begin.complete(true)
             throw CancellationError()
         }
-        let result: Result
-        do {
-            try Task.checkCancellation()
-            result = try operation.value()
-            // Some callers commit synchronously while holding their account or
-            // runtime publication fence. Cancellation cannot revoke that durable
-            // result; rollback is possible only while our transaction is open.
-            if realm.isInWriteTransaction { try Task.checkCancellation() }
-        } catch {
-            if realm.isInWriteTransaction { realm.cancelWrite() }
-            throw error
-        }
-        if realm.isInWriteTransaction {
+        let completion = try performAdmittedOperation(in: realm, operation: operation.value)
+        if completion.needsCommit {
             // Cancellation after commit submission cannot undo the commit.
             // Never cancel its completion callback: success means durable state.
             let error: Swift.Error? = await withCheckedContinuation { continuation in
@@ -80,7 +69,38 @@ private enum RealmOwnedWriteBridge {
             }
             if let error { throw error }
         }
-        return RealmWriteUnchecked(result)
+        return RealmWriteUnchecked(completion.value)
+    }
+
+    /// No frozen Realm escapes this synchronous boundary or remains pinned
+    /// across asynchronous commit settlement. The SDK caches a frozen native
+    /// Realm for each committed version while a strong reference retains it.
+    /// A synchronous commit advances that version, even when its notification
+    /// opens a successor write before commitWrite() returns. The mutable
+    /// isInWriteTransaction flag alone cannot prove we still own that write.
+    /// The native version-witness tests must verify this pinned SDK contract;
+    /// review it alongside the private begin-ticket contract on SDK upgrades.
+    private static func performAdmittedOperation<Result>(
+        in realm: Realm,
+        operation: () throws -> Result
+    ) throws -> (value: Result, needsCommit: Bool) {
+        let admittedVersion = ObjectiveCSupport.convert(object: realm.freeze())
+        func stillOwnsOpenWrite() -> Bool {
+            realm.isInWriteTransaction
+                && ObjectiveCSupport.convert(object: realm.freeze()) === admittedVersion
+        }
+        do {
+            try Task.checkCancellation()
+            let result = try operation()
+            let needsCommit = stillOwnsOpenWrite()
+            // Once a caller committed synchronously, neither cancellation nor
+            // automatic settlement may touch a notification's successor write.
+            if needsCommit { try Task.checkCancellation() }
+            return (result, needsCommit)
+        } catch {
+            if stillOwnsOpenWrite() { realm.cancelWrite() }
+            throw error
+        }
     }
 }
 
@@ -92,6 +112,9 @@ public extension Realm {
     /// Cancellation before admission cancels only this request. Once admitted,
     /// cancellation or an operation error rolls back this transaction. After
     /// commit submission, the call awaits durable settlement even if cancelled.
+    /// Synchronous commits are supported, including notification callbacks that
+    /// open another write. The body must not cancel and replace its admitted
+    /// transaction itself; signal failure by throwing instead.
 #if compiler(>=6)
     @discardableResult
     func asyncWritePreservingOwnership<Result>(
