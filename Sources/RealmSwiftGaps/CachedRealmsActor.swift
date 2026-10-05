@@ -157,7 +157,13 @@ public extension CachedRealmsActor {
             return cachedRealm
         }
 
+#if compiler(>=6)
+        // Use the pinned SDK's isolated factory, not its nonisolated legacy
+        // initializer. The opened Realm remains on this exact cache actor.
+        let realm = try await Realm.open(configuration: configuration, _isolation: self)
+#else
         let realm = try await Realm(configuration: configuration, actor: self)
+#endif
         let openedKey = realmCacheKey(for: configuration)
         guard opensMissingFile || openedKey == originalKey else {
             throw RealmBackgroundActorError.realmFileChangedDuringOpen
