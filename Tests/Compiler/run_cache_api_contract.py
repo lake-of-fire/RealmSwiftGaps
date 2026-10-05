@@ -43,9 +43,17 @@ public struct Realm: Sendable {
         public init() {}
     }
     public let configuration: Configuration
-    public init(configuration: Configuration, actor: isolated any Actor) async throws {
+    // Match the pinned SDK: its legacy actor initializer is nonisolated.
+    public init<A: Actor>(configuration: Configuration, actor: A) async throws {
         self.configuration = configuration
     }
+#if compiler(>=6)
+    public static func open(configuration: Configuration,
+                            _isolation actor: isolated any Actor = #isolation) async throws -> Realm {
+        Realm(configuration: configuration)
+    }
+#endif
+    private init(configuration: Configuration) { self.configuration = configuration }
 }
 '''
 ERRORS = '''public enum RealmBackgroundActorError: Error {
@@ -68,13 +76,13 @@ CONSUMERS = {
     }
 }
 ''',
-    "Adopt": PRELUDE + '''    func bypass(_ realm: Realm, _ configuration: Realm.Configuration) async {
-        await setCachedRealm(realm, for: configuration)
+    "Adopt": PRELUDE + '''    func bypass(_ realm: Realm, _configuration: Realm.Configuration) async {
+        await setCachedRealm(realm, for: _configuration)
     }
 }
 ''',
-    "AdoptIfNeeded": PRELUDE + '''    func bypass(_ realm: Realm, _ configuration: Realm.Configuration) async -> Realm {
-        await setCachedRealmIfNeeded(realm, for: configuration)
+    "AdoptIfNeeded": PRELUDE + '''    func bypass(_ realm: Realm, _configuration: Realm.Configuration) async -> Realm {
+        await setCachedRealmIfNeeded(realm, for: _configuration)
     }
 }
 ''',
