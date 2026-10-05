@@ -1,0 +1,108 @@
+name: Native Realm cache lookup boundary
+
+on:
+  pull_request:
+    paths:
+      - Sources/RealmSwiftGaps/**
+      - Tests/RealmSwiftGapsTests/RealmCacheLookupBoundaryTests.swift
+      - .github/workflows/cache-native-lookup.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native-lookup:
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+    env:
+      CONFIGURATION: ${{ matrix.configuration }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare complete production source with pinned native Realm
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PACKET="$RUNNER_TEMP/cache-native-$CONFIGURATION"
+          export FIXTURE="$RUNNER_TEMP/cache-native-package-$CONFIGURATION"
+          mkdir "$PACKET" "$FIXTURE"
+          cp -R Sources "$FIXTURE/Sources"
+          mkdir -p "$FIXTURE/Tests/RealmSwiftGapsTests"
+          cp Tests/RealmSwiftGapsTests/RealmCacheLookupBoundaryTests.swift \
+            "$FIXTURE/Tests/RealmSwiftGapsTests/"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          packet, fixture = Path(os.environ['PACKET']), Path(os.environ['FIXTURE'])
+          manifest = Path('Package.swift').read_text()
+          old = '.package(url: "https://github.com/realm/realm-swift.git", from: "20.0.5")'
+          if manifest.count(old) != 1:
+              raise SystemExit('Re-review the native fixture for the changed production dependency requirement')
+          manifest = manifest.replace(old, old.replace('from:', 'exact:'))
+          (fixture / 'Package.swift').write_text(manifest)
+          files = sorted(p for p in fixture.rglob('*') if p.is_file())
+          (packet / 'inputs.json').write_text(json.dumps([
+              {'path': str(p.relative_to(fixture)), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}
+              for p in files
+          ], indent=2) + '\n')
+          PY
+          git rev-parse HEAD > "$PACKET/checkout.txt"
+          swift --version > "$PACKET/swift-version.txt"
+          xcodebuild -version > "$PACKET/xcode-version.txt"
+          echo "PACKET=$PACKET" >> "$GITHUB_ENV"
+          echo "FIXTURE=$FIXTURE" >> "$GITHUB_ENV"
+      - name: Execute six native cache lookup tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          swift test --package-path "$FIXTURE" \
+            --configuration "$CONFIGURATION" --jobs 2 \
+            --filter RealmCacheLookupBoundaryTests \
+            --xunit-output "$PACKET/results.xml" \
+            > "$PACKET/swift-test.log" 2>&1
+          status=$?
+          echo "$status" > "$PACKET/process-status.txt"
+          if [[ -f "$FIXTURE/Package.resolved" ]]; then
+            cp "$FIXTURE/Package.resolved" "$PACKET/Package.resolved"
+          fi
+          tail -n 70 "$PACKET/swift-test.log"
+          exit "$status"
+      - name: Require every native identity and no skips
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, xml.etree.ElementTree as ET
+          from pathlib import Path
+          packet = Path(os.environ['PACKET'])
+          expected = {
+              'testMissingReadOnlyLookupDoesNotOpenOrCreateARealm',
+              'testCurrentCachedRealmRemainsReadableWithoutAnotherInsertion',
+              'testSamePathReplacementDuringLookupReturnsMissWithoutInvalidatingOldOwner',
+              'testDisappearedPathDuringLookupReturnsMissAndRetainsOriginalOwner',
+              'testUnrelatedFileReplacementDoesNotWithdrawCurrentCacheHit',
+              'testInMemoryCacheLookupDoesNotDependOnUnrelatedDiskState',
+          }
+          cases = list(ET.parse(packet / 'results.xml').iter('testcase'))
+          names = [c.get('name', '').removesuffix('()') for c in cases]
+          failed = [c.get('name') for c in cases if any(c.find(tag) is not None for tag in ('failure','error','skipped'))]
+          passed = len(cases) == 6 and set(names) == expected and not failed
+          (packet / 'method-receipt.json').write_text(json.dumps({
+              'configuration': os.environ['CONFIGURATION'],
+              'observed': names, 'failed_or_skipped': failed,
+              'missing': sorted(expected - set(names)), 'passed': passed,
+              'scope': 'native Realm cache component; not Reader app, UI, CloudKit, performance or application Release',
+          }, indent=2) + '\n')
+          if not passed:
+              raise SystemExit('Incomplete or failing native cache inventory')
+          print('All six required native cache lookup methods passed without skips.')
+          PY
+      - name: Retain complete native packet, including failed runs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-native-${{ matrix.configuration }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cache-native-${{ matrix.configuration }}
+          if-no-files-found: error
