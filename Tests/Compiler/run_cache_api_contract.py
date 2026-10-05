@@ -87,6 +87,8 @@ def main() -> int:
     parser.add_argument("--results-dir", type=Path, required=True)
     parser.add_argument("--swift", default="swiftc")
     parser.add_argument("--expect-legacy", action="store_true")
+    parser.add_argument("--non-sendable-realm", action="store_true",
+                        help="Require the actor boundary with a non-Sendable Realm compiler collaborator")
     args = parser.parse_args()
     source = (args.source or Path(__file__).resolve().parents[2]
               / "Sources/RealmSwiftGaps/CachedRealmsActor.swift").resolve()
@@ -97,7 +99,9 @@ def main() -> int:
     inputs.mkdir()
     data = source.read_bytes()
     (inputs / "CachedRealmsActor.swift").write_bytes(data)
-    for name, content in {"CryptoKit": CRYPTO, "RealmSwift": REALM, "Errors": ERRORS, **CONSUMERS}.items():
+    realm_surface = REALM.replace("public struct Realm: Sendable {", "public struct Realm {") \
+        if args.non_sendable_realm else REALM
+    for name, content in {"CryptoKit": CRYPTO, "RealmSwift": realm_surface, "Errors": ERRORS, **CONSUMERS}.items():
         (inputs / f"{name}.swift").write_text(content, encoding="utf-8")
     records: list[dict] = []
     summary = {
@@ -106,12 +110,22 @@ def main() -> int:
         "source_sha256": hashlib.sha256(data).hexdigest(),
         "source_blob_sha1": hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest(),
         "expected_legacy_surface": args.expect_legacy,
+        "realm_collaborator_is_sendable": not args.non_sendable_realm,
         "invocations": records,
     }
 
     def execute(command: list[str], log: Path) -> tuple[int, str]:
-        result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, timeout=120)
+        try:
+            result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, timeout=120)
+        except subprocess.TimeoutExpired as error:
+            diagnostic = error.stdout or ""
+            if isinstance(diagnostic, bytes):
+                diagnostic = diagnostic.decode("utf-8", errors="replace")
+            log.write_text(diagnostic, encoding="utf-8")
+            records.append({"command": command, "exit": None, "timed_out": True,
+                            "log": str(log.relative_to(output))})
+            raise
         log.write_text(result.stdout, encoding="utf-8")
         records.append({"command": command, "exit": result.returncode,
                         "log": str(log.relative_to(output))})
@@ -128,6 +142,8 @@ def main() -> int:
                 logs = output / f"swift{language}"
                 logs.mkdir()
                 flags = ["-swift-version", language, "-warnings-as-errors"]
+                if args.non_sendable_realm:
+                    flags.append("-strict-concurrency=complete")
                 for name in ("CryptoKit", "RealmSwift"):
                     status, _ = execute([args.swift, *flags, "-parse-as-library", "-emit-module",
                                          "-module-name", name, str(inputs / f"{name}.swift"),
