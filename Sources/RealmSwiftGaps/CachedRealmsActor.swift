@@ -84,7 +84,10 @@ public final class RealmStorageAdmission: @unchecked Sendable {
     }
 }
 
-public protocol CachedRealmsActor: AnyObject {
+// Realm is intentionally non-Sendable. Making the cache itself an Actor also
+// isolates its protocol requirements and default implementations to that owner;
+// an extension-only `Self: Actor` constraint does not isolate async requirements.
+public protocol CachedRealmsActor: Actor {
     // Storage primitives for the actor's opener. Application callers must use
     // cachedRealm(for:) or the read-only existingCachedRealm(for:) lookup.
     // A key passed to the setter must belong to that actual open; it must not
@@ -96,7 +99,7 @@ public protocol CachedRealmsActor: AnyObject {
     func cachedRealm(for configuration: Realm.Configuration) async throws -> Realm
 }
 
-public extension CachedRealmsActor where Self: Actor {
+public extension CachedRealmsActor {
     nonisolated func captureStorageAdmission(for configuration: Realm.Configuration) -> RealmStorageAdmission {
         RealmStorageAdmission(configuration: configuration, storageIdentity: realmCacheKey(for: configuration))
     }
