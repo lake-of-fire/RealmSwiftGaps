@@ -84,7 +84,14 @@ public final class RealmStorageAdmission: @unchecked Sendable {
     }
 }
 
-public protocol CachedRealmsActor: AnyObject {
+// Realm is intentionally non-Sendable. Making the cache itself an Actor also
+// isolates its protocol requirements and default implementations to that owner;
+// an extension-only `Self: Actor` constraint does not isolate async requirements.
+public protocol CachedRealmsActor: Actor {
+    // Storage primitives for the actor's opener. Application callers must use
+    // cachedRealm(for:) or the read-only existingCachedRealm(for:) lookup.
+    // A key passed to the setter must belong to that actual open; it must not
+    // be recomputed from an arbitrary previously opened Realm's current path.
     func getCachedRealm(key: String) async -> Realm?
     func setCachedRealm(_ realm: Realm, key: String) async
     // Convenience accessors in constrained protocol extensions must dispatch
@@ -92,7 +99,7 @@ public protocol CachedRealmsActor: AnyObject {
     func cachedRealm(for configuration: Realm.Configuration) async throws -> Realm
 }
 
-public extension CachedRealmsActor where Self: Actor {
+public extension CachedRealmsActor {
     nonisolated func captureStorageAdmission(for configuration: Realm.Configuration) -> RealmStorageAdmission {
         RealmStorageAdmission(configuration: configuration, storageIdentity: realmCacheKey(for: configuration))
     }
@@ -170,23 +177,29 @@ public extension CachedRealmsActor where Self: Actor {
         return realm
     }
     
-    @inline(__always)
-    public func existingCachedRealm(for configuration: Realm.Configuration) async -> Realm? {
-        await getCachedRealm(key: realmCacheKey(for: configuration))
-    }
-    
-    @inline(__always)
-    public func setCachedRealmIfNeeded(_ realm: Realm, for configuration: Realm.Configuration) async -> Realm {
-        if let cachedRealm = await existingCachedRealm(for: configuration) {
-            return cachedRealm
-        } else {
-            await setCachedRealm(realm, for: configuration)
-            return realm
-        }
+    /// A read-only cache hit is bound to the identity captured before lookup.
+    /// A conforming actor may suspend in getCachedRealm; do not return its old
+    /// result after the file at the same configured path has been replaced.
+    /// Rejection is a cache miss, not permission to evict or invalidate the
+    /// old Realm, which may still be owned by another operation.
+    func existingCachedRealm(for configuration: Realm.Configuration) async -> Realm? {
+        let key = realmCacheKey(for: configuration)
+        let realm = await getCachedRealm(key: key)
+        guard realmCacheKey(for: configuration) == key else { return nil }
+        return realm
     }
 
-    @inline(__always)
-    public func setCachedRealm(_ realm: Realm, for configuration: Realm.Configuration) async {
-        await setCachedRealm(realm, key: realmCacheKey(for: configuration))
+    // A live Realm does not expose the file identity which admitted its open.
+    // Synthesizing a key from its path now can silently relabel an old instance
+    // as a replacement store. Preserve compiler diagnostics for old clients,
+    // rather than keep a second unfenced publication path beside the opener.
+    @available(*, unavailable, message: "Use cachedRealm(for:). A supplied Realm cannot be safely adopted under a newly computed storage identity.")
+    func setCachedRealmIfNeeded(_ realm: Realm, for configuration: Realm.Configuration) async -> Realm {
+        fatalError("Unavailable Realm cache adoption API")
+    }
+
+    @available(*, unavailable, message: "Use cachedRealm(for:). A supplied Realm cannot be safely adopted under a newly computed storage identity.")
+    func setCachedRealm(_ realm: Realm, for configuration: Realm.Configuration) async {
+        fatalError("Unavailable Realm cache adoption API")
     }
 }

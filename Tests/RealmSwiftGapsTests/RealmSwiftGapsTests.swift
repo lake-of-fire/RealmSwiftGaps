@@ -443,6 +443,76 @@ private actor IndependentRealmWriteOwner {
         return result
     }
 
+    func commitThenNotificationStartsSuccessor(
+        for configuration: Realm.Configuration
+    ) async throws -> (
+        result: Int,
+        notificationOpenedSuccessor: Bool,
+        successorWasOpen: Bool,
+        originalValue: Int?,
+        provisionalSuccessorValue: Int?,
+        committedSuccessorValue: Int?
+    ) {
+        let realm = try await Realm(configuration: configuration, actor: self)
+        var armSuccessor = false
+        var notificationOpenedSuccessor = false
+        var notificationError: (any Error)?
+        let token = realm.observe { notification, observedRealm in
+            guard notification == .didChange, armSuccessor,
+                  !notificationOpenedSuccessor else { return }
+            armSuccessor = false
+            do {
+                try observedRealm.beginWrite()
+                let successor = FirstCachedRealmObject()
+                successor.id = "notification-successor"
+                successor.value = 88
+                observedRealm.add(successor)
+                notificationOpenedSuccessor = true
+            } catch {
+                notificationError = error
+            }
+        }
+        defer {
+            token.invalidate()
+            if realm.isInWriteTransaction { realm.cancelWrite() }
+        }
+
+        let result = try await realm.asyncWritePreservingOwnership {
+            let committed = FirstCachedRealmObject()
+            committed.id = "committed-before-notification-successor"
+            committed.value = 87
+            realm.add(committed)
+            armSuccessor = true
+            try realm.commitWrite()
+            return committed.value
+        }
+        if let notificationError { throw notificationError }
+
+        let successorWasOpen = realm.isInWriteTransaction
+        let originalValue = realm.object(
+            ofType: FirstCachedRealmObject.self,
+            forPrimaryKey: "committed-before-notification-successor"
+        )?.value
+        let provisionalSuccessorValue = realm.object(
+            ofType: FirstCachedRealmObject.self,
+            forPrimaryKey: "notification-successor"
+        )?.value
+        if realm.isInWriteTransaction { realm.cancelWrite() }
+        let committedSuccessorValue = realm.object(
+            ofType: FirstCachedRealmObject.self,
+            forPrimaryKey: "notification-successor"
+        )?.value
+
+        return (
+            result,
+            notificationOpenedSuccessor,
+            successorWasOpen,
+            originalValue,
+            provisionalSuccessorValue,
+            committedSuccessorValue
+        )
+    }
+
     func cancelFromOwnedOperation(for configuration: Realm.Configuration) async throws -> Bool {
         let realm = try await Realm(configuration: configuration, actor: self)
         do {
@@ -508,6 +578,33 @@ final class RealmSwiftGapsTests: XCTestCase {
         let value = try await caller.value
         XCTAssertEqual(value, 73)
         XCTAssertTrue(caller.isCancelled)
+    }
+
+    func test_publicOwnedWrite_synchronousCommitPreservesNotificationSuccessorTransaction() async throws {
+        let owner = IndependentRealmWriteOwner()
+        let configuration = Realm.Configuration(
+            inMemoryIdentifier: UUID().uuidString,
+            objectTypes: [FirstCachedRealmObject.self]
+        )
+        let report = try await owner.commitThenNotificationStartsSuccessor(
+            for: configuration
+        )
+
+        XCTAssertEqual(report.result, 87)
+        XCTAssertTrue(
+            report.notificationOpenedSuccessor,
+            "The local commit must deliver the did-change callback used by this ownership regression"
+        )
+        XCTAssertTrue(
+            report.successorWasOpen,
+            "The owned-write helper must not commit or cancel a transaction opened by the commit notification"
+        )
+        XCTAssertEqual(report.originalValue, 87)
+        XCTAssertEqual(report.provisionalSuccessorValue, 88)
+        XCTAssertNil(
+            report.committedSuccessorValue,
+            "Cancelling the notification-owned successor after the helper returns must remove only its provisional write"
+        )
     }
 
     @RealmBackgroundActor

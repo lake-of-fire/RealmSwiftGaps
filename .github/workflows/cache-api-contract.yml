@@ -1,0 +1,43 @@
+name: Realm cache API compiler contract
+
+on:
+  pull_request:
+    paths:
+      - Sources/RealmSwiftGaps/CachedRealmsActor.swift
+      - Tests/Compiler/**
+      - Tests/RealmSwiftGapsTests/RealmCacheLookupBoundaryTests.swift
+      - .github/workflows/cache-api-contract.yml
+
+permissions:
+  contents: read
+
+jobs:
+  compiler-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check public API with explicit compiler collaborators
+        run: |
+          python3 Tests/Compiler/run_cache_api_contract.py \
+            --results-dir "$RUNNER_TEMP/cache-api-contract/api"
+      - name: Check actor ownership with a non-Sendable Realm collaborator
+        run: |
+          python3 Tests/Compiler/run_cache_api_contract.py --non-sendable-realm \
+            --results-dir "$RUNNER_TEMP/cache-api-contract/actor"
+      - name: Check native receipt parser contracts
+        run: |
+          python3 -m unittest discover -v -s Tests/Compiler -p test_cache_native_receipt.py \
+            > "$RUNNER_TEMP/cache-api-contract/receipt-parser-tests.log" 2>&1
+          cat "$RUNNER_TEMP/cache-api-contract/receipt-parser-tests.log"
+      - name: Parse authored native XCTest source (not a native typecheck)
+        run: |
+          swiftc -frontend -parse -D DEBUG \
+            Tests/RealmSwiftGapsTests/RealmCacheLookupBoundaryTests.swift
+      - name: Retain exact inputs and compiler receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-api-contract-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cache-api-contract
+          if-no-files-found: error

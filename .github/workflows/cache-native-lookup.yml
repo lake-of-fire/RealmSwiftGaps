@@ -1,0 +1,111 @@
+name: Native Realm cache lookup boundary
+
+on:
+  pull_request:
+    paths:
+      - Sources/RealmSwiftGaps/**
+      - Tests/RealmSwiftGapsTests/RealmCacheLookupBoundaryTests.swift
+      - Tests/Compiler/check_cache_native_receipt.py
+      - .github/workflows/cache-native-lookup.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native-lookup:
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+    env:
+      CONFIGURATION: ${{ matrix.configuration }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare complete production source with pinned native Realm
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PACKET="$RUNNER_TEMP/cache-native-$CONFIGURATION"
+          export FIXTURE="$RUNNER_TEMP/cache-native-package-$CONFIGURATION"
+          mkdir "$PACKET" "$FIXTURE"
+          cp -R Sources "$FIXTURE/Sources"
+          mkdir -p "$FIXTURE/Tests/RealmSwiftGapsTests"
+          cp Tests/RealmSwiftGapsTests/RealmCacheLookupBoundaryTests.swift \
+            "$FIXTURE/Tests/RealmSwiftGapsTests/"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          packet, fixture = Path(os.environ['PACKET']), Path(os.environ['FIXTURE'])
+          manifest = Path('Package.swift').read_text()
+          old = '.package(url: "https://github.com/realm/realm-swift.git", from: "20.0.5")'
+          if manifest.count(old) != 1:
+              raise SystemExit('Re-review the native fixture for the changed production dependency requirement')
+          manifest = manifest.replace(old, old.replace('from:', 'exact:'))
+          (fixture / 'Package.swift').write_text(manifest)
+          files = sorted(p for p in fixture.rglob('*') if p.is_file())
+          (packet / 'inputs.json').write_text(json.dumps([
+              {'path': str(p.relative_to(fixture)), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}
+              for p in files
+          ], indent=2) + '\n')
+          PY
+          git rev-parse HEAD > "$PACKET/checkout.txt"
+          swift --version > "$PACKET/swift-version.txt"
+          xcodebuild -version > "$PACKET/xcode-version.txt"
+          echo "PACKET=$PACKET" >> "$GITHUB_ENV"
+          echo "FIXTURE=$FIXTURE" >> "$GITHUB_ENV"
+      - name: Execute six native cache lookup tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          swift test --package-path "$FIXTURE" \
+            --configuration "$CONFIGURATION" --jobs 2 \
+            --filter RealmCacheLookupBoundaryTests \
+            > "$PACKET/swift-test.log" 2>&1
+          status=$?
+          set -e
+          echo "$status" > "$PACKET/process-status.txt"
+          if [[ -f "$FIXTURE/Package.resolved" ]]; then
+            cp "$FIXTURE/Package.resolved" "$PACKET/Package.resolved"
+          fi
+          tail -n 70 "$PACKET/swift-test.log"
+          exit "$status"
+      - name: Require every native identity and no skips
+        shell: bash
+        run: |
+          python3 Tests/Compiler/check_cache_native_receipt.py --packet "$PACKET"
+      - name: Verify exact original source fails only the two replacement histories
+        shell: bash
+        run: |
+          set -euo pipefail
+          negative="$PACKET/negative-control"
+          mkdir "$negative"
+          original=93ac0cfa15e336946713e398ea2b1af7b6258543
+          path=Sources/RealmSwiftGaps/CachedRealmsActor.swift
+          git show "$original:$path" > "$negative/CachedRealmsActor.swift"
+          test "$(git hash-object "$negative/CachedRealmsActor.swift")" = c936904ebe7297e0540b0b55c39df512efc03cd3
+          cp "$negative/CachedRealmsActor.swift" "$FIXTURE/$path"
+          echo "$original" > "$negative/original-commit.txt"
+          set +e
+          swift test --package-path "$FIXTURE" \
+            --configuration "$CONFIGURATION" --jobs 2 \
+            --filter RealmCacheLookupBoundaryTests \
+            > "$negative/swift-test.log" 2>&1
+          status=$?
+          set -e
+          echo "$status" > "$negative/process-status.txt"
+          tail -n 60 "$negative/swift-test.log"
+          python3 Tests/Compiler/check_cache_native_receipt.py --packet "$negative" \
+            --expect-failure testSamePathReplacementDuringLookupReturnsMissWithoutInvalidatingOldOwner \
+            --expect-failure testDisappearedPathDuringLookupReturnsMissAndRetainsOriginalOwner
+      - name: Retain complete native packet, including failed runs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-native-${{ matrix.configuration }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cache-native-${{ matrix.configuration }}
+          if-no-files-found: error
