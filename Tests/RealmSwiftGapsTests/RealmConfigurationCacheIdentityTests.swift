@@ -25,7 +25,7 @@ final class RealmConfigurationCacheIdentityTests: XCTestCase {
             var differentLimit = realm.configuration
             differentLimit.maximumNumberOfActiveVersions = limit == 10 ? 11 : 10
             XCTAssertNotEqual(originalKey, actor.realmCacheKey(for: differentLimit))
-            _ = actor.removeCachedRealm(for: configuration)
+            _ = await actor.removeCachedRealm(for: configuration)
         }
     }
 }
