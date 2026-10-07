@@ -28,7 +28,8 @@ final class RealmConfigurationCacheIdentityTests: XCTestCase {
             alias.maximumNumberOfActiveVersions = limit
             XCTAssertEqual(actor.realmCacheKey(for: alias), key)
             let retained = try await actor.cachedRealm(for: alias)
-            XCTAssertTrue(retained === realm)
+            XCTAssertTrue(ObjectiveCSupport.convert(object: retained)
+                === ObjectiveCSupport.convert(object: realm))
             try await retained.asyncWritePreservingOwnership {
                 let row = ConfigurationCacheIdentityFixture()
                 row.id = String(describing: limit)
