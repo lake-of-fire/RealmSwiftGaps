@@ -11,6 +11,32 @@ private final class ConfigurationCacheIdentityFixture: Object {
 
 final class RealmConfigurationCacheIdentityTests: XCTestCase {
     @RealmBackgroundActor
+    func testUnlimitedAliasesRetainCachedWriterAndAdmissionAfterRoundTrip() async throws {
+        let actor = RealmBackgroundActor.shared
+        var base = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        base.objectTypes = [ConfigurationCacheIdentityFixture.self]
+        let realm = try await actor.cachedRealm(for: base)
+        let key = actor.realmCacheKey(for: base)
+        for limit: UInt? in [nil, 0, UInt.max] {
+            var alias = realm.configuration
+            alias.maximumNumberOfActiveVersions = limit
+            XCTAssertEqual(actor.realmCacheKey(for: alias), key)
+            let retained = try await actor.cachedRealm(for: alias)
+            XCTAssertTrue(retained === realm)
+            try await retained.asyncWritePreservingOwnership {
+                let row = ConfigurationCacheIdentityFixture()
+                row.id = String(describing: limit)
+                retained.add(row)
+            }
+        }
+        XCTAssertEqual(realm.objects(ConfigurationCacheIdentityFixture.self).count, 3)
+        var finite = base
+        finite.maximumNumberOfActiveVersions = 10
+        XCTAssertNotEqual(actor.realmCacheKey(for: finite), key)
+        _ = await actor.removeCachedRealm(for: base)
+    }
+
+    @RealmBackgroundActor
     func testActiveVersionAuthoritySurvivesNativeConfigurationRoundTrip() async throws {
         let actor = RealmBackgroundActor.shared
         let limits: [UInt?] = [nil, 0, UInt.max, 10]
