@@ -15,6 +15,12 @@ final class RealmConfigurationCacheIdentityTests: XCTestCase {
         let actor = RealmBackgroundActor.shared
         var base = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         base.objectTypes = [ConfigurationCacheIdentityFixture.self]
+        let fixtureConfiguration = base
+        addTeardownBlock {
+            await Task { @RealmBackgroundActor in
+                _ = await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+            }.value
+        }
         let realm = try await actor.cachedRealm(for: base)
         let key = actor.realmCacheKey(for: base)
         for limit: UInt? in [nil, 0, UInt.max] {
@@ -44,6 +50,12 @@ final class RealmConfigurationCacheIdentityTests: XCTestCase {
             var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
             configuration.objectTypes = [ConfigurationCacheIdentityFixture.self]
             configuration.maximumNumberOfActiveVersions = limit
+            let fixtureConfiguration = configuration
+            addTeardownBlock {
+                await Task { @RealmBackgroundActor in
+                    _ = await RealmBackgroundActor.shared.removeCachedRealm(for: fixtureConfiguration)
+                }.value
+            }
             let originalKey = actor.realmCacheKey(for: configuration)
             let realm = try await actor.cachedRealm(for: configuration)
             let restoredKey = actor.realmCacheKey(for: realm.configuration)
