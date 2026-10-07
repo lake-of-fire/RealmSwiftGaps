@@ -8,10 +8,69 @@ import Glibc
 #endif
 
 /// A captured store boundary. Only its owning admission may advance a missing
-/// file to the identity of a file it exclusively creates; an appearing file is
+/// file to the identity of a file it exclusively creates. Overlapping captures
+/// may share that pending owner; an externally appearing file is
 /// never adopted. The scope stays stable for publications belonging to that
 /// submission, even when creation gives the store its resource identifier.
 public final class RealmStorageAdmission: @unchecked Sendable {
+    // Weak membership lasts only as long as an operation retains its owner.
+    // Prune dead/completed entries on capture; owners are never reused for a
+    // newly missing path. This coordinates capture, not Realm writes or opens.
+    private final class PendingCreation {
+        weak var owner: RealmStorageAdmission?
+        init(_ owner: RealmStorageAdmission) { self.owner = owner }
+    }
+    // All registry state is protected by this lock. The immutable static owner
+    // also makes the synchronization boundary explicit to Swift concurrency.
+    private final class PendingCreationRegistry: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pendingCreations = [String: PendingCreation]()
+
+        func capture(
+            configuration: Realm.Configuration,
+            currentStorageIdentity: () -> String
+        ) -> RealmStorageAdmission {
+            lock.lock()
+            defer { lock.unlock() }
+            pendingCreations = pendingCreations.filter { $0.value.owner?.pendingCreationKey != nil }
+            let key = currentStorageIdentity()
+            if let owner = pendingCreations[key]?.owner,
+               owner.canSharePendingCreation(currentStorageIdentity) {
+                return owner
+            }
+            // Recompute after checking the owner: it may have exclusively created
+            // the file while capture waited for its lock. Never relabel that owner.
+            let admission = RealmStorageAdmission(configuration: configuration,
+                storageIdentity: currentStorageIdentity())
+            if admission.canSharePendingCreation(currentStorageIdentity),
+               let pendingKey = admission.pendingCreationKey {
+                pendingCreations[pendingKey] = PendingCreation(admission)
+            }
+            return admission
+        }
+    }
+    private static let pendingCreationRegistry = PendingCreationRegistry()
+
+    static func capture(
+        configuration: Realm.Configuration,
+        currentStorageIdentity: () -> String
+    ) -> RealmStorageAdmission {
+        pendingCreationRegistry.capture(configuration: configuration,
+            currentStorageIdentity: currentStorageIdentity)
+    }
+
+    private var pendingCreationKey: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return requiresCreation ? storageIdentity : nil
+    }
+
+    private func canSharePendingCreation(_ currentStorageIdentity: () -> String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return requiresCreation && storageIdentity == currentStorageIdentity()
+    }
+
     public let scopeIdentity: String
     private let lock = NSLock()
     private var storageIdentity: String
@@ -101,7 +160,9 @@ public protocol CachedRealmsActor: Actor {
 
 public extension CachedRealmsActor {
     nonisolated func captureStorageAdmission(for configuration: Realm.Configuration) -> RealmStorageAdmission {
-        RealmStorageAdmission(configuration: configuration, storageIdentity: realmCacheKey(for: configuration))
+        RealmStorageAdmission.capture(configuration: configuration) {
+            realmCacheKey(for: configuration)
+        }
     }
 
     nonisolated func realmCacheKey(
