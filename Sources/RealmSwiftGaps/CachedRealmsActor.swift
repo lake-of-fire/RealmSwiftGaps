@@ -194,11 +194,16 @@ public extension CachedRealmsActor {
         let encryptionFingerprint = configuration.encryptionKey.map {
             SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
         } ?? "none"
+        // Realm maps nil/zero to the unlimited native value when opening, then
+        // returns UInt.max in realm.configuration. Keep equivalent authority
+        // identical across that round trip while preserving finite limits.
+        let activeVersionLimit = configuration.maximumNumberOfActiveVersions ?? 0
+        let normalizedActiveVersionLimit = activeVersionLimit == 0 ? UInt.max : activeVersionLimit
         return [
             storageIdentity,
             "schema:\(configuration.schemaVersion)",
             "readOnly:\(configuration.readOnly)",
-            "activeVersions:\(configuration.maximumNumberOfActiveVersions.map(String.init) ?? "default")",
+            "activeVersions:\(normalizedActiveVersionLimit)",
             "deleteIfMigrationNeeded:\(configuration.deleteRealmIfMigrationNeeded)",
             "seed:\(configuration.seedFilePath?.standardizedFileURL.path ?? "none")",
             "encryption:\(encryptionFingerprint)",
