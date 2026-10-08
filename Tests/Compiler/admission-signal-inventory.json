@@ -1,0 +1,13 @@
+{
+  "owner": "RealmWriteAdmissionSignalTests",
+  "methods": [
+    "testAdmissionBeforeAndAfterWaiterRegistration",
+    "testCancellationBeforeAndAfterWaiterRegistrationDoesNotGrantOwnership",
+    "testEveryRegistrationAdmissionCancellationOrderPreservesActualAdmission",
+    "testDisarmRejectsSyntheticSDKCallbackAfterQueuedCancellation",
+    "testDisarmPreservesAdmissionDespiteLateCancellationAndCallbacks",
+    "testRepeatedEventsResumeRegisteredContinuationOnlyOnce",
+    "testRepeatedEventsBeforeRegistrationStillSettleWaiter",
+    "testConcurrentAdmissionAndCancellationPreserveOwnershipAndResumeOnce"
+  ]
+}

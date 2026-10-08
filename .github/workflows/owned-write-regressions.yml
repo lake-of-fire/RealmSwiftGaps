@@ -1,0 +1,98 @@
+name: Existing owned-writer native regressions
+
+on:
+  pull_request:
+    paths:
+      - Sources/RealmSwiftGaps/**
+      - Tests/RealmSwiftGapsTests/RealmSwiftGapsTests.swift
+      - Tests/RealmSwiftGapsTests/RealmWriteAdmissionSignalTests.swift
+      - Tests/Compiler/**
+      - .github/workflows/owned-write-regressions.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native-debug:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare exact production source and existing native regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PACKET="$RUNNER_TEMP/owned-write-regression-debug"
+          export FIXTURE="$RUNNER_TEMP/owned-write-regression-package"
+          mkdir "$PACKET" "$FIXTURE"
+          cp -R Sources "$FIXTURE/Sources"
+          mkdir -p "$FIXTURE/Tests/RealmSwiftGapsTests"
+          cp Tests/RealmSwiftGapsTests/RealmSwiftGapsTests.swift "$FIXTURE/Tests/RealmSwiftGapsTests/"
+          cp Tests/RealmSwiftGapsTests/RealmWriteAdmissionSignalTests.swift "$FIXTURE/Tests/RealmSwiftGapsTests/"
+          cp Tests/Compiler/existing-owned-write-inventory.json "$PACKET/"
+          cp Tests/Compiler/admission-signal-inventory.json "$PACKET/"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          packet, fixture = Path(os.environ['PACKET']), Path(os.environ['FIXTURE'])
+          manifest = Path('Package.swift').read_text()
+          requirement = '.package(url: "https://github.com/realm/realm-swift.git", from: "20.0.5")'
+          if manifest.count(requirement) != 1:
+              raise SystemExit('Review native fixture for changed Realm requirement')
+          (fixture / 'Package.swift').write_text(manifest.replace(requirement, requirement.replace('from:', 'exact:')))
+          files = sorted(path for path in fixture.rglob('*') if path.is_file())
+          (packet / 'inputs.json').write_text(json.dumps([
+              {'path': str(path.relative_to(fixture)), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+              for path in files
+          ], indent=2) + '\n')
+          PY
+          git rev-parse HEAD > "$PACKET/checkout.txt"
+          swift --version > "$PACKET/swift-version.txt"
+          echo "PACKET=$PACKET" >> "$GITHUB_ENV"
+          echo "FIXTURE=$FIXTURE" >> "$GITHUB_ENV"
+      - name: Install build output formatter
+        shell: bash
+        run: |
+          if ! command -v xcsift >/dev/null 2>&1; then
+            brew install xcsift
+          fi
+      - name: Exercise the shared admission and existing single-store writer paths
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          swift test --package-path "$FIXTURE" --configuration debug --jobs 2 \
+            2>&1 | tee "$PACKET/swift-test.log" | xcsift -w -E
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          printf '%s\n' "${statuses[0]}" > "$PACKET/process-status.txt"
+          printf '%s\n' "${statuses[@]}" > "$PACKET/pipeline-statuses.txt"
+          if [[ -f "$FIXTURE/Package.resolved" ]]; then
+            cp "$FIXTURE/Package.resolved" "$PACKET/Package.resolved"
+          fi
+          for status in "${statuses[@]}"; do
+            if [[ "$status" != 0 ]]; then exit "$status"; fi
+          done
+      - name: Account for both explicit owning suites
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          packet="$RUNNER_TEMP/owned-write-regression-debug"
+          result=0
+          for inventory in existing-owned-write-inventory.json admission-signal-inventory.json; do
+            owner=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["owner"])' "Tests/Compiler/$inventory")
+            owner_packet="$packet/$owner"
+            mkdir -p "$owner_packet"
+            cp "$packet/swift-test.log" "$packet/process-status.txt" "$owner_packet/" || result=1
+            python3 Tests/Compiler/check_cache_native_receipt.py \
+              --packet "$owner_packet" --inventory "Tests/Compiler/$inventory" || result=1
+          done
+          exit "$result"
+      - name: Retain exact inputs, both receipts and failure packets
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owned-write-regression-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/owned-write-regression-debug
+          if-no-files-found: error
