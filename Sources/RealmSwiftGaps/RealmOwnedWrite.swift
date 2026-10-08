@@ -86,10 +86,10 @@ private enum RealmOwnedWriteBridge {
         let source = source.value
         let nativeSource = ObjectiveCSupport.convert(object: source)
         let nativeDestination = ObjectiveCSupport.convert(object: destination)
-        guard let sourceActor = nativeSource.actor,
-              let destinationActor = nativeDestination.actor,
-              sourceActor === destinationActor,
-              sourceActor === actor as AnyObject else {
+        guard let sourceActor = nativeSource.actor as? any Actor,
+              let destinationActor = nativeDestination.actor as? any Actor,
+              (sourceActor as AnyObject) === (destinationActor as AnyObject),
+              (sourceActor as AnyObject) === (actor as AnyObject) else {
             throw RealmReadLockWriteError.differentOwningActors
         }
         let sourceConfiguration = source.configuration
