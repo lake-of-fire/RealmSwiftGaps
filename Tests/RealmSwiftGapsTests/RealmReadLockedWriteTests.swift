@@ -118,6 +118,10 @@ private actor ReadLockedWriteFixture {
             }) {
                 try await target.asyncWritePreservingOwnership(holdingReadLockIn: source) {
                     ran = true
+                    // Capture the fixture actor in this TaskLocal body, as the
+                    // admitted mutation would in production. A body without
+                    // actor state is inferred nonisolated by Swift 6.
+                    self.add("unexpected-publication", value: 42, to: target)
                 }
             }
             XCTFail("Queued cancellation unexpectedly succeeded")
