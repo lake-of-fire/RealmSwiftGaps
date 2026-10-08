@@ -36,6 +36,23 @@ private enum RealmOwnedWriteBridge {
         operation: RealmWriteUnchecked<() throws -> Result>
     ) async throws -> RealmWriteUnchecked<Result> {
         let realm = realm.value
+        try await admit(actor: actor, realm: realm)
+        let completion = try performAdmittedOperation(in: realm, operation: operation.value)
+        if completion.needsCommit {
+            // Cancellation after commit submission cannot undo the commit.
+            // Never cancel its completion callback: success means durable state.
+            let error: Swift.Error? = await withCheckedContinuation { continuation in
+                realm.commitAsyncWrite(allowGrouping: false) { error in
+                    continuation.resume(returning: error)
+                }
+                RealmWriteCommitObservation.didSubmit?()
+            }
+            if let error { throw error }
+        }
+        return RealmWriteUnchecked(completion.value)
+    }
+
+    private static func admit(actor: isolated any Actor, realm: Realm) async throws {
         try Task.checkCancellation()
         RealmWriteSubmissionObservation.willSubmit?()
         let signal = RealmWriteAdmissionSignal()
@@ -57,19 +74,57 @@ private enum RealmOwnedWriteBridge {
             begin.complete(true)
             throw CancellationError()
         }
-        let completion = try performAdmittedOperation(in: realm, operation: operation.value)
-        if completion.needsCommit {
-            // Cancellation after commit submission cannot undo the commit.
-            // Never cancel its completion callback: success means durable state.
-            let error: Swift.Error? = await withCheckedContinuation { continuation in
-                realm.commitAsyncWrite(allowGrouping: false) { error in
-                    continuation.resume(returning: error)
-                }
-                RealmWriteCommitObservation.didSubmit?()
-            }
-            if let error { throw error }
+    }
+
+    static func performHoldingReadLock<Result>(
+        actor: isolated any Actor,
+        realm: RealmWriteUnchecked<Realm>,
+        source: RealmWriteUnchecked<Realm>,
+        operation: RealmWriteUnchecked<() throws -> Result>
+    ) async throws -> RealmWriteUnchecked<Result> {
+        let destination = realm.value
+        let source = source.value
+        let nativeSource = ObjectiveCSupport.convert(object: source)
+        let nativeDestination = ObjectiveCSupport.convert(object: destination)
+        guard let sourceActor = nativeSource.actor as? any Actor,
+              let destinationActor = nativeDestination.actor as? any Actor,
+              (sourceActor as AnyObject) === (destinationActor as AnyObject),
+              (sourceActor as AnyObject) === (actor as AnyObject) else {
+            throw RealmReadLockWriteError.differentOwningActors
         }
-        return RealmWriteUnchecked(completion.value)
+        let sourceConfiguration = source.configuration
+        let destinationConfiguration = destination.configuration
+        let sameMemory = sourceConfiguration.inMemoryIdentifier != nil
+            && sourceConfiguration.inMemoryIdentifier == destinationConfiguration.inMemoryIdentifier
+        let sameFile = sourceConfiguration.inMemoryIdentifier == nil
+            && destinationConfiguration.inMemoryIdentifier == nil
+            && sourceConfiguration.fileURL?.standardizedFileURL.resolvingSymlinksInPath()
+                == destinationConfiguration.fileURL?.standardizedFileURL.resolvingSymlinksInPath()
+        guard nativeSource !== nativeDestination, !sameMemory, !sameFile else {
+            throw RealmReadLockWriteError.identicalStore
+        }
+        try await admit(actor: actor, realm: source)
+        // Unlike the single-writer witness, this one spans destination admission.
+        // The source is deliberately read-only, and its physical writer lock is
+        // retained until the destination settles. Never commit this transaction.
+        let sourceVersion = ObjectiveCSupport.convert(object: source.freeze())
+        func stillOwnsSource() -> Bool {
+            source.isInWriteTransaction
+                && ObjectiveCSupport.convert(object: source.freeze()) === sourceVersion
+        }
+        defer {
+            if stillOwnsSource() { source.cancelWrite() }
+        }
+        return try await perform(
+            actor: actor,
+            realm: realm,
+            operation: RealmWriteUnchecked {
+                guard stillOwnsSource() else {
+                    throw RealmReadLockWriteError.sourceOwnershipLost
+                }
+                return try operation.value()
+            }
+        )
     }
 
     /// No frozen Realm escapes this synchronous boundary or remains pinned
@@ -104,7 +159,59 @@ private enum RealmOwnedWriteBridge {
     }
 }
 
+public enum RealmReadLockWriteError: Error {
+    case differentOwningActors
+    case identicalStore
+    case sourceOwnershipLost
+}
+
 public extension Realm {
+    /// Acquires a read-only source writer lock before this destination's owned
+    /// writer admission. Both stores must belong to the same actor and be
+    /// physically distinct. The synchronous body may read the source and mutate
+    /// the destination; it must not mutate or settle the source transaction.
+    /// No account/publication fence may be held while calling this method.
+    /// The source lock is rolled back after destination settlement. Cancellation
+    /// never rolls back a foreign writer or reclassifies a durable destination
+    /// commit as failure. All other writers must preserve source → destination
+    /// ordering when acquiring both stores.
+#if compiler(>=6)
+    @discardableResult
+    func asyncWritePreservingOwnership<Result>(
+        holdingReadLockIn source: Realm,
+        _isolation actor: isolated any Actor = #isolation,
+        _ operation: () throws -> Result
+    ) async throws -> Result {
+        try await withoutActuallyEscaping(operation) { operation in
+            try await RealmOwnedWriteBridge.performHoldingReadLock(
+                actor: actor,
+                realm: RealmWriteUnchecked(self),
+                source: RealmWriteUnchecked(source),
+                operation: RealmWriteUnchecked(operation)
+            ).value
+        }
+    }
+#else
+    @discardableResult
+    @_unsafeInheritExecutor
+    func asyncWritePreservingOwnership<Result>(
+        holdingReadLockIn source: Realm,
+        _ operation: () throws -> Result
+    ) async throws -> Result {
+        guard let owner = ObjectiveCSupport.convert(object: self).actor as? any Actor else {
+            throw RealmReadLockWriteError.differentOwningActors
+        }
+        return try await withoutActuallyEscaping(operation) { operation in
+            try await RealmOwnedWriteBridge.performHoldingReadLock(
+                actor: owner,
+                realm: RealmWriteUnchecked(self),
+                source: RealmWriteUnchecked(source),
+                operation: RealmWriteUnchecked(operation)
+            ).value
+        }
+    }
+#endif
+
     /// Call from this Realm's owning actor, as required by Realm.asyncWrite.
     /// Queues an independent transaction on that actor in the calling task.
     /// The operation and its result stay on that actor; task-local

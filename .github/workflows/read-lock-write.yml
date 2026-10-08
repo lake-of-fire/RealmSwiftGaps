@@ -1,0 +1,89 @@
+name: Owned cross-Realm publication
+
+on:
+  pull_request:
+    paths:
+      - Sources/RealmSwiftGaps/**
+      - Tests/RealmSwiftGapsTests/RealmReadLockedWriteTests.swift
+      - Tests/Compiler/**
+      - .github/workflows/read-lock-write.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native-debug:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check native receipt contracts
+        run: python3 -m unittest discover -v -s Tests/Compiler -p test_cache_native_receipt.py
+      - name: Prepare exact production source and pinned native Realm
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PACKET="$RUNNER_TEMP/read-lock-write-debug"
+          export FIXTURE="$RUNNER_TEMP/read-lock-write-package"
+          mkdir "$PACKET" "$FIXTURE"
+          cp -R Sources "$FIXTURE/Sources"
+          mkdir -p "$FIXTURE/Tests/RealmSwiftGapsTests"
+          cp Tests/RealmSwiftGapsTests/RealmReadLockedWriteTests.swift "$FIXTURE/Tests/RealmSwiftGapsTests/"
+          cp Tests/Compiler/read-lock-write-inventory.json "$PACKET/inventory.json"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          packet, fixture = Path(os.environ['PACKET']), Path(os.environ['FIXTURE'])
+          manifest = Path('Package.swift').read_text()
+          requirement = '.package(url: "https://github.com/realm/realm-swift.git", from: "20.0.5")'
+          if manifest.count(requirement) != 1:
+              raise SystemExit('Review the native fixture for the changed production Realm requirement')
+          (fixture / 'Package.swift').write_text(manifest.replace(requirement, requirement.replace('from:', 'exact:')))
+          files = sorted(path for path in fixture.rglob('*') if path.is_file())
+          (packet / 'inputs.json').write_text(json.dumps([
+              {'path': str(path.relative_to(fixture)), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+              for path in files
+          ], indent=2) + '\n')
+          PY
+          git rev-parse HEAD > "$PACKET/checkout.txt"
+          swift --version > "$PACKET/swift-version.txt"
+          echo "PACKET=$PACKET" >> "$GITHUB_ENV"
+          echo "FIXTURE=$FIXTURE" >> "$GITHUB_ENV"
+      - name: Install build output formatter
+        shell: bash
+        run: |
+          if ! command -v xcsift >/dev/null 2>&1; then
+            brew install xcsift
+          fi
+      - name: Execute the eight native ownership histories
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          swift test --package-path "$FIXTURE" --configuration debug --jobs 2 \
+            --filter RealmReadLockedWriteTests 2>&1 \
+            | tee "$PACKET/swift-test.log" | xcsift -w -E
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          printf '%s\n' "${statuses[0]}" > "$PACKET/process-status.txt"
+          printf '%s\n' "${statuses[@]}" > "$PACKET/pipeline-statuses.txt"
+          if [[ -f "$FIXTURE/Package.resolved" ]]; then
+            cp "$FIXTURE/Package.resolved" "$PACKET/Package.resolved"
+          fi
+          for status in "${statuses[@]}"; do
+            if [[ "$status" != 0 ]]; then exit "$status"; fi
+          done
+      - name: Account for every required native identity
+        if: always()
+        shell: bash
+        run: |
+          python3 Tests/Compiler/check_cache_native_receipt.py \
+            --packet "$RUNNER_TEMP/read-lock-write-debug" \
+            --inventory Tests/Compiler/read-lock-write-inventory.json
+      - name: Retain the Debug component packet, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: read-lock-write-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/read-lock-write-debug
+          if-no-files-found: error
