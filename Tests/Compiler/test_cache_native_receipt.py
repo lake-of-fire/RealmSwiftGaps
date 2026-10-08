@@ -3,18 +3,44 @@ import unittest
 from check_cache_native_receipt import EXPECTED, OWNER, inspect
 
 
-def transcript(style='apple', failures=frozenset()):
-    lines = [f"Test Suite '{OWNER}' started at date."]
-    for name in sorted(EXPECTED):
-        identifier = f"-[RealmSwiftGapsTests.{OWNER} {name}]" if style == 'apple' else f"{OWNER}.{name}"
+def transcript(style='apple', failures=frozenset(), *, owner=OWNER, expected=EXPECTED):
+    lines = [f"Test Suite '{owner}' started at date."]
+    for name in sorted(expected):
+        identifier = f"-[RealmSwiftGapsTests.{owner} {name}]" if style == 'apple' else f"{owner}.{name}"
         lines.extend([f"Test Case '{identifier}' started.",
                       f"Test Case '{identifier}' {'failed' if name in failures else 'passed'} (0.001 seconds)."])
-    lines.extend([f"Test Suite '{OWNER}' {'failed' if failures else 'passed'} at date.",
-                  f"Executed 6 tests, with {len(failures)} failures (0 unexpected).", "Test run with 0 tests passed after 0.001 seconds."])
+    lines.extend([f"Test Suite '{owner}' {'failed' if failures else 'passed'} at date.",
+                  f"Executed {len(expected)} tests, with {len(failures)} failures (0 unexpected).", "Test run with 0 tests passed after 0.001 seconds."])
     return '\n'.join(lines)
 
 
 class ReceiptContracts(unittest.TestCase):
+    def test_explicit_component_inventory_has_independent_accounting(self):
+        owner = 'RealmReadLockedWriteTests'
+        expected = frozenset({'testSourceOwner', 'testDestinationOwner'})
+        log = transcript(owner=owner, expected=expected)
+        self.assertFalse(inspect(log, 0)['contract_passed'])
+        receipt = inspect(log, 0, owner=owner, expected=expected)
+        self.assertTrue(receipt['contract_passed'])
+        self.assertEqual(receipt['native_successful_methods'], 2)
+        self.assertEqual(receipt['required_methods'], sorted(expected))
+
+    def test_explicit_component_inventory_rejects_missing_identity(self):
+        expected = frozenset({'testSourceOwner', 'testDestinationOwner'})
+        log = transcript(owner='OwnedTests', expected=expected)
+        log = '\n'.join(line for line in log.splitlines() if 'testSourceOwner' not in line)
+        self.assertFalse(inspect(log, 0, owner='OwnedTests', expected=expected)['contract_passed'])
+
+    def test_explicit_component_inventory_rejects_wrong_same_count(self):
+        expected = frozenset({'testSourceOwner', 'testDestinationOwner'})
+        log = transcript(owner='OwnedTests', expected=expected).replace('testSourceOwner', 'testOtherOwner')
+        self.assertFalse(inspect(log, 0, owner='OwnedTests', expected=expected)['contract_passed'])
+
+    def test_empty_or_invalid_explicit_inventory_is_not_a_pass(self):
+        log = transcript(owner='OwnedTests', expected=frozenset())
+        self.assertFalse(inspect(log, 0, owner='OwnedTests', expected=frozenset())['contract_passed'])
+        self.assertFalse(inspect(log, 0, owner='', expected=frozenset({'testOwner'}))['contract_passed'])
+
     def test_complete_apple_events(self):
         self.assertTrue(inspect(transcript(), 0)['contract_passed'])
 
