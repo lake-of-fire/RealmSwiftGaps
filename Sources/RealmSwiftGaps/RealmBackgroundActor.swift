@@ -36,18 +36,24 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     
     @inline(__always)
     public func write(configuration: Realm.Configuration, operation: @escaping (RealmSwift.Realm) throws -> Void) async throws {
+        try Task.checkCancellation()
         let realm = try await cachedRealm(for: configuration)
+        try Task.checkCancellation()
         try realm.writeIfNeeded {
+            try Task.checkCancellation()
             try operation(realm)
         }
     }
     
     @inline(__always)
     public func write<T: ThreadConfined>(_ reference: ThreadSafeReference<T>, configuration: Realm.Configuration, operation: @escaping (RealmSwift.Realm, T) throws -> Void) async throws {
+        try Task.checkCancellation()
         let realm = try await cachedRealm(for: configuration)
-        guard let resolvedObject = realm.resolve(reference) else { throw RealmBackgroundActorError.unableToResolveObject }
+        try Task.checkCancellation()
         
         try realm.writeIfNeeded {
+            try Task.checkCancellation()
+            guard let resolvedObject = realm.resolve(reference) else { throw RealmBackgroundActorError.unableToResolveObject }
             try operation(realm, resolvedObject)
         }
     }
