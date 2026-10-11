@@ -5,6 +5,8 @@ import RealmSwift
 // Realm is non-Sendable. Requiring Actor isolates these async requirements
 // to the conformer's owner; an extension-only Self: Actor constraint does not.
 public protocol CachedRealmsActor: Actor {
+    // Opener primitives: a publication key must belong to that actual open,
+    // never a supplied Realm re-keyed from the file currently at its path.
     func getCachedRealm(key: String) async -> Realm?
     func setCachedRealm(_ realm: Realm, key: String) async
     // Convenience accessors in constrained protocol extensions must dispatch
@@ -101,18 +103,16 @@ public extension CachedRealmsActor {
         return realm
     }
     
-    @inline(__always)
+    // A live Realm does not expose the filesystem identity that admitted its
+    // open. Recomputing identity from its configured path can relabel a retired
+    // handle as a replacement store. Keep an actionable diagnostic for callers.
+    @available(*, unavailable, message: "Use cachedRealm(for:). A supplied Realm cannot be safely adopted under a newly computed storage identity.")
     public func setCachedRealmIfNeeded(_ realm: Realm, for configuration: Realm.Configuration) async -> Realm {
-        if let cachedRealm = await existingCachedRealm(for: configuration) {
-            return cachedRealm
-        } else {
-            await setCachedRealm(realm, for: configuration)
-            return realm
-        }
+        fatalError("Unavailable Realm cache adoption API")
     }
 
-    @inline(__always)
+    @available(*, unavailable, message: "Use cachedRealm(for:). A supplied Realm cannot be safely adopted under a newly computed storage identity.")
     public func setCachedRealm(_ realm: Realm, for configuration: Realm.Configuration) async {
-        await setCachedRealm(realm, key: realmCacheKey(for: configuration))
+        fatalError("Unavailable Realm cache adoption API")
     }
 }
