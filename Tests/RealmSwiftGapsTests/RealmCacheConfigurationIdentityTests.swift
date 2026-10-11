@@ -3,7 +3,7 @@ import RealmSwift
 import XCTest
 @testable import RealmSwiftGaps
 
-private actor ConfigurationIdentityRealmCache: @preconcurrency CachedRealmsActor {
+private actor ConfigurationIdentityRealmCache: CachedRealmsActor {
     private var realms = [String: Realm]()
     private var storeCount = 0
 

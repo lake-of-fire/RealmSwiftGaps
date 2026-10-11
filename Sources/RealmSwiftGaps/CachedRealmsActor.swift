@@ -2,7 +2,9 @@ import CryptoKit
 import Foundation
 import RealmSwift
 
-public protocol CachedRealmsActor: AnyObject {
+// Realm is non-Sendable. Requiring Actor isolates these async requirements
+// to the conformer's owner; an extension-only Self: Actor constraint does not.
+public protocol CachedRealmsActor: Actor {
     func getCachedRealm(key: String) async -> Realm?
     func setCachedRealm(_ realm: Realm, key: String) async
     // Convenience accessors in constrained protocol extensions must dispatch
@@ -10,8 +12,8 @@ public protocol CachedRealmsActor: AnyObject {
     func cachedRealm(for configuration: Realm.Configuration) async throws -> Realm
 }
 
-public extension CachedRealmsActor where Self: Actor {
-    func realmCacheKey(
+public extension CachedRealmsActor {
+    nonisolated func realmCacheKey(
         for configuration: Realm.Configuration,
         includingFileResourceIdentifier: Bool = true
     ) -> String {
