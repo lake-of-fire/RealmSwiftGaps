@@ -37,12 +37,17 @@ private actor RealmOpenFenceSuspendedDefaultCache: CachedRealmsActor {
 
     private var realms = [String: Realm]()
     private var lookupCount = 0
+    private let suspendAtLookup: Int
     private var continuation: CheckedContinuation<Void, Never>?
     private var released = false
 
+    init(suspendAtLookup: Int = 2) {
+        self.suspendAtLookup = suspendAtLookup
+    }
+
     func getCachedRealm(key: String) async -> Realm? {
         lookupCount += 1
-        if lookupCount == 2, !released {
+        if lookupCount == suspendAtLookup, !released {
             publicationObserved.fulfill()
             await withCheckedContinuation { continuation = $0 }
         }
@@ -63,6 +68,15 @@ private actor RealmOpenFenceSuspendedDefaultCache: CachedRealmsActor {
         for configuration: Realm.Configuration
     ) async throws -> [String] {
         let realm = try await cachedRealm(for: configuration)
+        return realm.objects(RealmOpenFenceObject.self).map(\.id).sorted()
+    }
+
+    func existingIdentifiers(
+        for configuration: Realm.Configuration
+    ) async -> [String]? {
+        guard let realm = await existingCachedRealm(for: configuration) else {
+            return nil
+        }
         return realm.objects(RealmOpenFenceObject.self).map(\.id).sorted()
     }
 
@@ -435,6 +449,40 @@ final class RealmOpenFencingPortTests: XCTestCase {
             for: configurations.current
         )
         XCTAssertEqual(rejectedCacheCount, 0)
+        XCTAssertEqual(successor, ["replacement"])
+    }
+
+    func testExistingCacheProbeRejectsReplacementAcrossSuspendedLookup() async throws {
+        let configurations = try diskConfigurations()
+        let fixtureActor = RealmBackgroundActor()
+        try await fixtureActor.createOpenFenceFixture(
+            for: configurations.current,
+            identifier: "original"
+        )
+        try await fixtureActor.createOpenFenceFixture(
+            for: configurations.replacement,
+            identifier: "replacement"
+        )
+
+        // The default opener performs two lookups. Suspend the subsequent
+        // existing-only probe after its original-file key has been captured.
+        let cache = RealmOpenFenceSuspendedDefaultCache(suspendAtLookup: 3)
+        defer { Task { await cache.releasePublication() } }
+        let original = try await cache.identifiers(for: configurations.current)
+        XCTAssertEqual(original, ["original"])
+        let probe = Task {
+            await cache.existingIdentifiers(for: configurations.current)
+        }
+        await fulfillment(of: [cache.publicationObserved], timeout: 5)
+        try replaceFile(
+            current: configurations.current,
+            replacement: configurations.replacement
+        )
+        await cache.releasePublication()
+
+        let staleResult = await probe.value
+        XCTAssertNil(staleResult)
+        let successor = try await cache.identifiers(for: configurations.current)
         XCTAssertEqual(successor, ["replacement"])
     }
 

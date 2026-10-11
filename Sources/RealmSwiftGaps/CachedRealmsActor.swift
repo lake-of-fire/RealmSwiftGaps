@@ -86,7 +86,12 @@ public extension CachedRealmsActor where Self: Actor {
     
     @inline(__always)
     public func existingCachedRealm(for configuration: Realm.Configuration) async -> Realm? {
-        await getCachedRealm(key: realmCacheKey(for: configuration))
+        let key = realmCacheKey(for: configuration)
+        let realm = await getCachedRealm(key: key)
+        // A conformer's lookup may suspend while the file is replaced.
+        // A read-only probe must not return the old file under the new path.
+        guard realmCacheKey(for: configuration) == key else { return nil }
+        return realm
     }
     
     @inline(__always)
