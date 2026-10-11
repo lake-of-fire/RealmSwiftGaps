@@ -40,11 +40,16 @@ public extension CachedRealmsActor where Self: Actor {
         let encryptionFingerprint = configuration.encryptionKey.map {
             SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
         } ?? "none"
+        // Realm maps nil through 0 to the native unlimited sentinel. Its
+        // configuration getter returns UInt.max on our 64-bit platforms.
+        // Treat all three spellings as one effective open configuration.
+        let requestedActiveVersions = configuration.maximumNumberOfActiveVersions ?? 0
+        let activeVersions = requestedActiveVersions == 0 ? UInt.max : requestedActiveVersions
         return [
             storageIdentity,
             "schema:\(configuration.schemaVersion)",
             "readOnly:\(configuration.readOnly)",
-            "activeVersions:\(configuration.maximumNumberOfActiveVersions.map(String.init) ?? "default")",
+            "activeVersions:\(activeVersions)",
             "deleteIfMigrationNeeded:\(configuration.deleteRealmIfMigrationNeeded)",
             "seed:\(configuration.seedFilePath?.standardizedFileURL.path ?? "none")",
             "encryption:\(encryptionFingerprint)",

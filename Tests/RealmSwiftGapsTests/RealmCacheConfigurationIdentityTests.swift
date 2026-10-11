@@ -13,6 +13,17 @@ private actor ConfigurationIdentityRealmCache: @preconcurrency CachedRealmsActor
         storeCount += 1
     }
 
+    func unlimitedVersionRoundTripPreservesIdentity() async throws -> Bool {
+        var configuration = Realm.Configuration()
+        configuration.inMemoryIdentifier = UUID().uuidString
+        configuration.objectTypes = [FirstConfigurationIdentityObject.self]
+        let realm = try await cachedRealm(for: configuration)
+        var roundTrippedLimit = configuration
+        roundTrippedLimit.maximumNumberOfActiveVersions =
+            realm.configuration.maximumNumberOfActiveVersions
+        return realmCacheKey(for: configuration) == realmCacheKey(for: roundTrippedLimit)
+    }
+
     func cacheRejectsDifferentSchema() async throws -> Bool {
         var configuration = Realm.Configuration()
         configuration.inMemoryIdentifier = UUID().uuidString
@@ -142,6 +153,28 @@ final class RealmCacheConfigurationIdentityTests: XCTestCase {
         let replacementKey = cache.realmCacheKey(for: configuration)
         XCTAssertNotEqual(missingKey, firstKey)
         XCTAssertNotEqual(firstKey, replacementKey)
+    }
+
+    func testUnlimitedActiveVersionSpellingsShareIdentity() {
+        let cache = ConfigurationIdentityRealmCache()
+        var implicit = Realm.Configuration()
+        implicit.inMemoryIdentifier = UUID().uuidString
+        var zero = implicit
+        zero.maximumNumberOfActiveVersions = 0
+        var maximum = implicit
+        maximum.maximumNumberOfActiveVersions = UInt.max
+        var finite = implicit
+        finite.maximumNumberOfActiveVersions = 10
+
+        XCTAssertEqual(cache.realmCacheKey(for: implicit), cache.realmCacheKey(for: zero))
+        XCTAssertEqual(cache.realmCacheKey(for: implicit), cache.realmCacheKey(for: maximum))
+        XCTAssertNotEqual(cache.realmCacheKey(for: implicit), cache.realmCacheKey(for: finite))
+    }
+
+    func testNativeActiveVersionRoundTripPreservesIdentity() async throws {
+        let cache = ConfigurationIdentityRealmCache()
+        let preserved = try await cache.unlimitedVersionRoundTripPreservesIdentity()
+        XCTAssertTrue(preserved)
     }
 
     func testCachedRealmRejectsDifferentSchemaWithoutOpeningIt() async throws {
