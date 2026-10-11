@@ -39,10 +39,13 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         try Task.checkCancellation()
         let realm = try await cachedRealm(for: configuration)
         try Task.checkCancellation()
-        try realm.writeIfNeeded {
-            try Task.checkCancellation()
-            try operation(realm)
-        }
+        try await write(in: realm, operation: operation)
+    }
+
+    // Independent submissions queue behind another task's admitted write.
+    // Keep writeIfNeeded for callers intentionally joining their own transaction.
+    func write(in realm: RealmSwift.Realm, operation: (RealmSwift.Realm) throws -> Void) async throws {
+        try await realm.asyncWritePreservingOwnership { try operation(realm) }
     }
     
     @inline(__always)
@@ -51,8 +54,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         let realm = try await cachedRealm(for: configuration)
         try Task.checkCancellation()
         
-        try realm.writeIfNeeded {
-            try Task.checkCancellation()
+        try await write(in: realm) { realm in
             guard let resolvedObject = realm.resolve(reference) else { throw RealmBackgroundActorError.unableToResolveObject }
             try operation(realm, resolvedObject)
         }
