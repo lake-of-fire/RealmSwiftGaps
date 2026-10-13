@@ -15,6 +15,37 @@ public protocol CachedRealmsActor: Actor {
 }
 
 public extension CachedRealmsActor {
+    nonisolated func captureStorageAdmission(for configuration: Realm.Configuration) -> RealmStorageAdmission {
+        RealmStorageAdmission.capture(configuration: configuration) {
+            realmCacheKey(for: configuration)
+        }
+    }
+
+    /// The presentation captures this admission before suspension. Only its
+    /// own exclusive creation may advance a missing file to an actual inode.
+    func cachedRealm(
+        for configuration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission
+    ) async throws -> Realm {
+        try Task.checkCancellation()
+        try storageAdmission.admitCreation(configuration: configuration) {
+            realmCacheKey(for: configuration)
+        }
+        let realm = try await cachedRealm(for: configuration)
+        try Task.checkCancellation()
+        guard storageAdmission.matchesCurrentStorageIdentity({ realmCacheKey(for: configuration) }) else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
+        return realm
+    }
+
+    func prepareStorage(
+        for configuration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission
+    ) async throws {
+        _ = try await cachedRealm(for: configuration, storageAdmission: storageAdmission)
+    }
+
     nonisolated func realmCacheKey(
         for configuration: Realm.Configuration,
         includingFileResourceIdentifier: Bool = true
