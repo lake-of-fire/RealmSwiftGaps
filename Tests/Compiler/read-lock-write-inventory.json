@@ -1,0 +1,13 @@
+{
+  "owner": "RealmReadLockedWriteTests",
+  "methods": [
+    "testForeignSourceRollbackPreserved",
+    "testForeignSourceCommitObserved",
+    "testForeignDestinationRollbackPreserved",
+    "testForeignDestinationCommitObserved",
+    "testCancellationWaitingForSourcePreservesForeignOwner",
+    "testCancellationWaitingForDestinationReleasesOnlyOwnedSource",
+    "testIdenticalSourceAndDestinationRejectedBeforeAdmission",
+    "testSynchronousDestinationCommitPreservesNotificationSuccessorAfterCancellation"
+  ]
+}
