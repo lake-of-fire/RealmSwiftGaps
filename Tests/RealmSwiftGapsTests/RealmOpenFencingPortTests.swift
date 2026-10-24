@@ -307,6 +307,73 @@ final class RealmOpenFencingPortTests: XCTestCase {
         XCTAssertTrue(removed)
     }
 
+    func testMissingFileCreationRejectsReplacementBeforeOwnerAndWaiterPublication() async throws {
+        var preparedConfigurations = try diskConfigurations()
+        // Keep the app's compaction policy in the call. A creation repair must
+        // not only protect test configurations with no compaction callback.
+        preparedConfigurations.current.shouldCompactOnLaunch = { totalBytes, usedBytes in
+            totalBytes > 40 * 1024 * 1024
+                && Double(usedBytes) / Double(totalBytes) < 0.8
+        }
+        let configurations = preparedConfigurations
+        let currentURL = try XCTUnwrap(configurations.current.fileURL)
+        let directory = currentURL.deletingLastPathComponent()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: currentURL.path))
+        let fixtureActor = RealmBackgroundActor()
+        try await fixtureActor.createOpenFenceFixture(
+            for: configurations.replacement,
+            identifier: "replacement"
+        )
+
+        let barrier = RealmOpenFenceBarrier()
+        let cache = RealmBackgroundActor {
+            await barrier.observe($0)
+        }
+        let owner = Task {
+            try await cache.openFenceIdentifiers(
+                for: configurations.current
+            )
+        }
+        addTeardownBlock {
+            await barrier.releaseAll()
+            _ = await owner.result
+            _ = await cache.removeCachedRealm(for: configurations.current)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        await fulfillment(of: [barrier.publicationObserved], timeout: 5)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: currentURL.path))
+        let createdKey = cache.realmCacheKey(for: configurations.current)
+
+        let waiter = Task {
+            try await cache.openFenceIdentifiers(
+                for: configurations.current
+            )
+        }
+        addTeardownBlock {
+            await barrier.releaseAll()
+            _ = await waiter.result
+        }
+        await fulfillment(of: [barrier.joinObserved], timeout: 5)
+
+        try replaceFile(
+            current: configurations.current,
+            replacement: configurations.replacement
+        )
+        let replacementKey = cache.realmCacheKey(for: configurations.current)
+        XCTAssertNotEqual(createdKey, replacementKey)
+        await barrier.releasePublication()
+
+        await assertFileChanged(owner)
+        await assertFileChanged(waiter)
+        let cacheCount = await cache.openFenceCachedRealmCount()
+        XCTAssertEqual(cacheCount, 0, "A retired handle must not be cached under the replacement key")
+
+        let replacementIdentifiers = try await cache.openFenceIdentifiers(
+            for: configurations.current
+        )
+        XCTAssertEqual(replacementIdentifiers, ["replacement"])
+    }
+
     func testSuspendedExistingFileOpenRejectsReplacementForOwnerAndWaiter() async throws {
         let configurations = try diskConfigurations()
         let fixtureActor = RealmBackgroundActor()
