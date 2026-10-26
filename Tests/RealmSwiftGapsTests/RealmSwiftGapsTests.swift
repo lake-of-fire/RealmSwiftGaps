@@ -651,12 +651,15 @@ final class RealmSwiftGapsTests: XCTestCase {
         await fulfillment(of: [settled], timeout: 5)
         XCTAssertTrue(realm.isInWriteTransaction)
         XCTAssertFalse(probe.executed)
+        // Release the owner before joining the caller even if the bounded
+        // settlement expectation failed. Otherwise the regression under test
+        // can leave both tasks waiting on this test to release the owner.
+        await ownerGate.release()
+        try await owner.value
         switch await caller.result {
         case .success: XCTFail("Queued cancellation must throw")
         case .failure(let error): XCTAssertTrue(error is CancellationError)
         }
-        await ownerGate.release()
-        try await owner.value
         try await actor.write(configuration: configuration) { realm in
             probe.mutateFirstObject(in: realm)
         }
