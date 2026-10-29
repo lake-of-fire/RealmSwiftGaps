@@ -22,6 +22,17 @@ import RealmSwift
 //}
 
 public extension Realm {
+    /// A non-suspending boundary that requires its own transaction. Reject a
+    /// busy Realm before the SDK can raise an uncatchable Objective-C exception.
+    /// Use asyncWritePreservingOwnership when the caller can await admission.
+    @discardableResult
+    func writeIfAvailable<T>(_ block: () throws -> T) throws -> T {
+        guard !isInWriteTransaction else {
+            throw RealmWriteOwnershipError.transactionAlreadyOpen
+        }
+        return try write(block)
+    }
+
     @discardableResult
     func writeIfNeeded<T>(_ block: () throws -> T) throws -> T {
         if isInWriteTransaction {
@@ -35,8 +46,8 @@ public extension Realm {
         Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                guard let object = realm.resolve(ref) else { return }
-                try realm.writeIfNeeded {
+                try await realm.asyncWritePreservingOwnership {
+                    guard let object = realm.resolve(ref) else { return }
                     block(realm, object)
                 }
             }
@@ -47,7 +58,7 @@ public extension Realm {
         Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try realm.writeIfNeeded {
+                try await realm.asyncWritePreservingOwnership {
                     block(realm)
                 }
             }
@@ -59,7 +70,7 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try realm.writeIfNeeded {
+                try await realm.asyncWritePreservingOwnership {
                     block(realm)
                 }
             }
@@ -71,8 +82,8 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                guard let object = realm.resolve(passedObject) else { return }
-                try realm.writeIfNeeded {
+                try await realm.asyncWritePreservingOwnership {
+                    guard let object = realm.resolve(passedObject) else { return }
                     block(realm, object)
                 }
             }
@@ -84,11 +95,9 @@ public extension Realm {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration) 
-                let objects: [T] = passedObjects.compactMap {
-                    realm.resolve($0)
-                }
-                try realm.writeIfNeeded {
-                    for object in objects {
+                try await realm.asyncWritePreservingOwnership {
+                    for reference in passedObjects {
+                        guard let object = realm.resolve(reference) else { continue }
                         block(realm, object)
                     }
                 }
