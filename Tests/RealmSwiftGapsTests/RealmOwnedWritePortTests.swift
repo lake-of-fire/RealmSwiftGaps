@@ -168,7 +168,7 @@ final class RealmOwnedWritePortTests: XCTestCase {
             addTeardownBlock { @RealmBackgroundActor in
                 await ownerGate.release()
                 _ = await owner.result
-                Self.releaseCache(configuration)
+                _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
             }
             await fulfillment(of: [ownerGate.entered], timeout: 5)
             let submitted = XCTestExpectation(description: "Independent ticket submitted")
@@ -227,7 +227,7 @@ final class RealmOwnedWritePortTests: XCTestCase {
                 realm.objects(OwnedWritePortFixture.self).first?.value = 99
             }
             XCTAssertEqual(realm.objects(OwnedWritePortFixture.self).first?.value, 99)
-            Self.releaseCache(configuration)
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
         }
     }
 
@@ -235,7 +235,7 @@ final class RealmOwnedWritePortTests: XCTestCase {
     func testCancellationAfterAsyncCommitSubmissionReturnsDurableSuccess() async throws {
         let configuration = Self.configuration()
         let actor = RealmBackgroundActor.shared
-        addTeardownBlock { @RealmBackgroundActor in Self.releaseCache(configuration) }
+        addTeardownBlock { @RealmBackgroundActor in _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
         let task = Task { @RealmBackgroundActor in
             try await RealmWriteCommitObservation.$didSubmit.withValue({ withUnsafeCurrentTask { $0?.cancel() } }) {
                 try await actor.write(configuration: configuration) { realm in
@@ -258,7 +258,7 @@ final class RealmOwnedWritePortTests: XCTestCase {
         let configuration = Self.configuration()
         let actor = RealmBackgroundActor.shared
         let realm = try await actor.cachedRealm(for: configuration)
-        addTeardownBlock { @RealmBackgroundActor in Self.releaseCache(configuration) }
+        addTeardownBlock { @RealmBackgroundActor in _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
         let object = OwnedWritePortFixture()
         try realm.write { realm.add(object) }
         let actorReference = ThreadSafeReference(to: object)
@@ -282,7 +282,7 @@ final class RealmOwnedWritePortTests: XCTestCase {
     func testExplicitWriteIfNeededStillJoinsOwnedTransaction() async throws {
         let configuration = Self.configuration()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-        addTeardownBlock { @RealmBackgroundActor in Self.releaseCache(configuration) }
+        addTeardownBlock { @RealmBackgroundActor in _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
         try realm.beginWrite()
         defer { if realm.isInWriteTransaction { realm.cancelWrite() } }
         try realm.writeIfNeeded { realm.add(OwnedWritePortFixture()) }
@@ -295,7 +295,7 @@ final class RealmOwnedWritePortTests: XCTestCase {
     func testReferenceArraySkipsDeletedObjectsAndWritesItsLiveMembers() async throws {
         let configuration = Self.configuration()
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-        addTeardownBlock { @RealmBackgroundActor in Self.releaseCache(configuration) }
+        addTeardownBlock { @RealmBackgroundActor in _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration) }
         let deleted = OwnedWritePortFixture()
         deleted.id = "deleted"
         let live = OwnedWritePortFixture()
@@ -317,17 +317,7 @@ final class RealmOwnedWritePortTests: XCTestCase {
         Realm.Configuration(inMemoryIdentifier: "owned-port-\(UUID())", objectTypes: [OwnedWritePortFixture.self])
     }
 
-    @RealmBackgroundActor
-    private static func releaseCache(_ configuration: Realm.Configuration) {
-        let actor = RealmBackgroundActor.shared
-        let keys = actor.cachedRealms.keys.filter {
-            actor.cachedRealms[$0]?.configuration.inMemoryIdentifier == configuration.inMemoryIdentifier
-        }
-        for key in keys {
-            guard actor.cachedRealms[key]?.isInWriteTransaction == false else { continue }
-            actor.cachedRealms.removeValue(forKey: key)?.invalidate()
-        }
-    }
+
 }
 
 @objc(RealmSwiftGapsOwnedWritePortFixture)
