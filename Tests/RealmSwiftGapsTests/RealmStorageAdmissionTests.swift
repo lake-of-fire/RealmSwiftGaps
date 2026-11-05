@@ -4,7 +4,7 @@ import XCTest
 @testable import RealmSwiftGaps
 
 @objc(CapturedRealmStoreFixture20261013)
-private final class CapturedRealmStoreFixture: Object {
+private final class CapturedRealmStoreFixture: Object, @unchecked Sendable {
     @Persisted(primaryKey: true) var id = "fixture"
     override class func shouldIncludeInDefaultSchema() -> Bool { false }
 }
@@ -13,13 +13,19 @@ final class RealmStorageAdmissionTests: XCTestCase {
     @RealmBackgroundActor
     func testCapturedCreationKeepsScopeAndResolvesOneStore() async throws {
         let configuration = try makeConfiguration()
-        defer { try? Realm.deleteFiles(for: configuration) }
         let actor = RealmBackgroundActor()
+        addTeardownBlock {
+            _ = await actor.removeCachedRealm(for: configuration)
+            try? Realm.deleteFiles(for: configuration)
+            if let directory = configuration.fileURL?.deletingLastPathComponent() {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
         let admission = actor.captureStorageAdmission(for: configuration)
         let scope = admission.scopeIdentity
-        let first = try await actor.cachedRealm(for: configuration, storageAdmission: admission)
-        let second = try await actor.cachedRealm(for: configuration, storageAdmission: admission)
-        XCTAssertTrue(first === second)
+        let sameStore = try await actor.repeatedlyOpenCapturedStore(
+            configuration: configuration, admission: admission)
+        XCTAssertTrue(sameStore)
         XCTAssertEqual(admission.scopeIdentity, scope)
         XCTAssertTrue(admission.matchesCurrentStorageIdentity { actor.realmCacheKey(for: configuration) })
     }
@@ -27,8 +33,14 @@ final class RealmStorageAdmissionTests: XCTestCase {
     @RealmBackgroundActor
     func testExternallyCreatedStoreCannotInheritMissingFileAdmission() async throws {
         let configuration = try makeConfiguration()
-        defer { try? Realm.deleteFiles(for: configuration) }
         let actor = RealmBackgroundActor()
+        addTeardownBlock {
+            _ = await actor.removeCachedRealm(for: configuration)
+            try? Realm.deleteFiles(for: configuration)
+            if let directory = configuration.fileURL?.deletingLastPathComponent() {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
         let admission = actor.captureStorageAdmission(for: configuration)
         try autoreleasepool {
             let external = try Realm(configuration: configuration)
@@ -44,13 +56,24 @@ final class RealmStorageAdmissionTests: XCTestCase {
     @RealmBackgroundActor
     func testOverlappingMissingFileCapturesShareOnlyTheirOwnCreation() throws {
         let configuration = try makeConfiguration()
-        defer { try? Realm.deleteFiles(for: configuration) }
         let actor = RealmBackgroundActor()
+        addTeardownBlock {
+            _ = await actor.removeCachedRealm(for: configuration)
+            try? Realm.deleteFiles(for: configuration)
+            if let directory = configuration.fileURL?.deletingLastPathComponent() {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
         let first = actor.captureStorageAdmission(for: configuration)
         let second = actor.captureStorageAdmission(for: configuration)
         XCTAssertTrue(first === second)
         let other = try makeConfiguration()
-        defer { try? Realm.deleteFiles(for: other) }
+        defer {
+            try? Realm.deleteFiles(for: other)
+            if let directory = other.fileURL?.deletingLastPathComponent() {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
         XCTAssertNotEqual(first.scopeIdentity, actor.captureStorageAdmission(for: other).scopeIdentity)
     }
 
@@ -61,5 +84,17 @@ final class RealmStorageAdmissionTests: XCTestCase {
         configuration.fileURL = directory.appendingPathComponent("reader.realm")
         configuration.objectTypes = [CapturedRealmStoreFixture.self]
         return configuration
+    }
+}
+
+private extension RealmBackgroundActor {
+    func repeatedlyOpenCapturedStore(
+        configuration: Realm.Configuration, admission: RealmStorageAdmission
+    ) async throws -> Bool {
+        let first = try await cachedRealm(for: configuration, storageAdmission: admission)
+        let second = try await cachedRealm(for: configuration, storageAdmission: admission)
+        // Realm is a struct. Its public equality compares the native Realm
+        // identity; evaluate that identity on the actual Realm owner.
+        return first == second
     }
 }
