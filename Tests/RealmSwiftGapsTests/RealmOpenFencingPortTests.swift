@@ -46,12 +46,19 @@ private actor RealmOpenFenceSuspendedDefaultCache: CachedRealmsActor {
     }
 
     func getCachedRealm(key: String) async -> Realm? {
+        // Return the value captured before suspension: the probe must reject
+        // an old handle even if its cache entry is retired while it waits.
+        let realm = realms[key]
         lookupCount += 1
         if lookupCount == suspendAtLookup, !released {
             publicationObserved.fulfill()
             await withCheckedContinuation { continuation = $0 }
         }
-        return realms[key]
+        return realm
+    }
+
+    func releaseCachedRealm(for configuration: Realm.Configuration) -> Bool {
+        realms.removeValue(forKey: realmCacheKey(for: configuration)) != nil
     }
 
     func setCachedRealm(_ realm: Realm, key: String) async {
@@ -474,6 +481,12 @@ final class RealmOpenFencingPortTests: XCTestCase {
             await cache.existingIdentifiers(for: configurations.current)
         }
         await fulfillment(of: [cache.publicationObserved], timeout: 5)
+        // Realm's native coordinator is shared by path while any handle is
+        // alive. Retire the cache's reference before replacing the file. The
+        // suspended probe still owns its captured handle and must reject it;
+        // only after that probe settles may a new open observe the successor.
+        let retired = await cache.releaseCachedRealm(for: configurations.current)
+        XCTAssertTrue(retired)
         try replaceFile(
             current: configurations.current,
             replacement: configurations.replacement
