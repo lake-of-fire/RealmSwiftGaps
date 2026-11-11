@@ -13,7 +13,7 @@ let package = Package(
             targets: ["RealmSwiftGaps"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.5"),
+        .package(url: "https://github.com/aehlke/realm-swift.git", revision: "ea971ea2975f9e3cb2cce5ae9339db51e65f2191"),
     ],
     targets: [
         .target(
