@@ -89,6 +89,7 @@ public extension CachedRealmsActor {
             "seed:\(configuration.seedFilePath?.standardizedFileURL.path ?? "none")",
             "encryption:\(encryptionFingerprint)",
             "objects:\(objectTypes)",
+            "sessionAdmission:\(configuration.sessionAdmission?.fingerprint.base64EncodedString() ?? "none")",
         ].joined(separator: "|")
     }
 

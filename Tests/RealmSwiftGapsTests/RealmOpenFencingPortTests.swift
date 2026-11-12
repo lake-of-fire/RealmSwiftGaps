@@ -543,3 +543,152 @@ final class RealmOpenFencingPortTests: XCTestCase {
         XCTAssertNotEqual(baselineKey, limitedKey)
     }
 }
+
+
+@objc(RealmSwiftGapsAdmissionEmptyObject)
+private final class RealmAdmissionEmptyObject: Object, @unchecked Sendable {
+    override class func shouldIncludeInDefaultSchema() -> Bool { false }
+    @Persisted var value = 0
+}
+
+private extension RealmBackgroundActor {
+    func cohortHandleIdentity(_ configuration: Realm.Configuration) async throws -> String {
+        let realm = try await cachedRealm(for: configuration)
+        return String(describing: ObjectIdentifier(ObjectiveCSupport.convert(object: realm)))
+    }
+
+    func cohortInsert(_ configuration: Realm.Configuration, identifier: String) async throws {
+        let realm = try await cachedRealm(for: configuration)
+        try await realm.asyncWrite {
+            let object = RealmOpenFenceObject()
+            object.id = identifier
+            realm.add(object, update: .modified)
+        }
+    }
+
+    func cohortFacts(_ configuration: Realm.Configuration) async throws -> ([String], Int) {
+        let realm = try await cachedRealm(for: configuration)
+        await realm.asyncRefresh()
+        return (realm.objects(RealmOpenFenceObject.self).map(\.id).sorted(),
+                realm.objects(RealmAdmissionEmptyObject.self).count)
+    }
+
+    func cohortReleaseAll() { cachedRealms.removeAll() }
+}
+
+extension RealmOpenFencingPortTests {
+    private func cohortConfiguration() throws -> Realm.Configuration {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("realm-session-cache-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var configuration = Realm.Configuration(fileURL: directory.appendingPathComponent("target.realm"))
+        configuration.objectTypes = [RealmAdmissionEmptyObject.self, RealmOpenFenceObject.self]
+        configuration.sessionAdmission = try Realm.SessionAdmission(
+            identifier: "actor-cache-cohort/v1", emptyObjectTypes: [RealmAdmissionEmptyObject.self])
+        return configuration
+    }
+
+    private func incompatibleCohortConfigurations(_ configuration: Realm.Configuration) throws -> [Realm.Configuration] {
+        var generic = configuration
+        generic.sessionAdmission = nil
+        var different = configuration
+        different.sessionAdmission = try Realm.SessionAdmission(
+            identifier: "different-actor-cache-cohort/v1", emptyObjectTypes: [RealmAdmissionEmptyObject.self])
+        return [generic, different]
+    }
+
+    func testPendingOpenJoinsOnlyEquivalentActualCohort() async throws {
+        let configuration = try cohortConfiguration()
+        let barrier = RealmOpenFenceBarrier()
+        let owner = RealmBackgroundActor(openObserver: { await barrier.observe($0) })
+        let first = Task { try await owner.cohortHandleIdentity(configuration) }
+        await fulfillment(of: [barrier.publicationObserved], timeout: 5)
+        var equivalent = configuration
+        equivalent.sessionAdmission = try Realm.SessionAdmission(
+            identifier: "actor-cache-cohort/v1", emptyObjectTypes: [RealmAdmissionEmptyObject.self])
+        let matching = Task { try await owner.cohortHandleIdentity(equivalent) }
+        await fulfillment(of: [barrier.joinObserved], timeout: 5)
+        let finished = (0..<2).map { XCTestExpectation(description: "incompatible pending cohort \($0) finished") }
+        let incompatible = try incompatibleCohortConfigurations(configuration)
+        let rejected = incompatible.enumerated().map { index, config in
+            Task { () -> Bool in
+                defer { finished[index].fulfill() }
+                do { _ = try await owner.cohortHandleIdentity(config); return false }
+                catch {
+                    return (error as NSError).domain == "io.realm.session-admission"
+                        && (error as NSError).code == 1
+                }
+            }
+        }
+        // Wrong cache coalescing would wait behind the blocked compatible open.
+        // Bound that observation, then always release and join every task.
+        await fulfillment(of: finished, timeout: 5)
+        await barrier.releaseAll()
+        let originalIdentity = try await first.value
+        let equivalentIdentity = try await matching.value
+        XCTAssertEqual(originalIdentity, equivalentIdentity)
+        for task in rejected { let denied = await task.value; XCTAssertTrue(denied) }
+        let openCount = await barrier.count(.openedBeforePublication)
+        let joins = await barrier.count(.joinedPendingOpen)
+        XCTAssertEqual(openCount, 1)
+        XCTAssertEqual(joins, 1)
+        try await owner.cohortInsert(configuration, identifier: "shared")
+        let facts = try await owner.cohortFacts(configuration)
+        XCTAssertEqual(facts.0, ["shared"])
+        XCTAssertEqual(facts.1, 0)
+        await owner.cohortReleaseAll()
+    }
+
+    func testCompletedOpenCannotLendActualDBToNilOrDifferentContract() async throws {
+        let configuration = try cohortConfiguration()
+        let owner = RealmBackgroundActor()
+        let original = try await owner.cohortHandleIdentity(configuration)
+        for config in try incompatibleCohortConfigurations(configuration) {
+            do {
+                _ = try await owner.cohortHandleIdentity(config)
+                XCTFail("Completed cache lent an admitted DB to an incompatible cohort")
+            } catch {
+                XCTAssertEqual((error as NSError).domain, "io.realm.session-admission")
+                XCTAssertEqual((error as NSError).code, 1)
+            }
+        }
+        let repeated = try await owner.cohortHandleIdentity(configuration)
+        XCTAssertEqual(repeated, original)
+        try await owner.cohortInsert(configuration, identifier: "still-writable")
+        let facts = try await owner.cohortFacts(configuration)
+        XCTAssertEqual(facts.0, ["still-writable"])
+        XCTAssertEqual(facts.1, 0)
+        await owner.cohortReleaseAll()
+    }
+
+    func testTwoActualActorCohortsRemainConcurrentAndGenericEntersAfterRelease() async throws {
+        let configuration = try cohortConfiguration()
+        let app = RealmBackgroundActor()
+        let share = RealmBackgroundActor()
+        async let appOpen = app.cohortHandleIdentity(configuration)
+        async let shareOpen = share.cohortHandleIdentity(configuration)
+        _ = try await (appOpen, shareOpen)
+        try await app.cohortInsert(configuration, identifier: "app")
+        try await share.cohortInsert(configuration, identifier: "share")
+        let appFacts = try await app.cohortFacts(configuration)
+        let shareFacts = try await share.cohortFacts(configuration)
+        XCTAssertEqual(appFacts.0, ["app", "share"])
+        XCTAssertEqual(shareFacts.0, appFacts.0)
+        XCTAssertEqual(appFacts.1, 0)
+        XCTAssertEqual(shareFacts.1, 0)
+        await app.cohortReleaseAll()
+        var generic = configuration
+        generic.sessionAdmission = nil
+        let next = RealmBackgroundActor()
+        do { _ = try await next.cohortHandleIdentity(generic); XCTFail("Share DB must retain the fence") }
+        catch { XCTAssertEqual((error as NSError).domain, "io.realm.session-admission") }
+        await share.cohortReleaseAll()
+        _ = try await next.cohortHandleIdentity(generic)
+        // A retained generic DB cannot be relabelled as admitted either.
+        do { _ = try await next.cohortHandleIdentity(configuration); XCTFail("Generic DB was relabelled") }
+        catch { XCTAssertEqual((error as NSError).domain, "io.realm.session-admission") }
+        await next.cohortReleaseAll()
+        _ = try await app.cohortHandleIdentity(configuration)
+        await app.cohortReleaseAll()
+    }
+}
