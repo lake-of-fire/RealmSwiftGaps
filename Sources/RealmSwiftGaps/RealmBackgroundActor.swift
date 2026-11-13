@@ -85,7 +85,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         // Publish on the owning actor. A completed Task retains only a key,
         // never a live Realm that can outlast eviction or file replacement.
         let pendingOpen = Task { () throws -> String in
-            let realm = try await RealmSwift.Realm(configuration: configuration, actor: self)
+            let realm = try await RealmWriteExecutionProtection.openRealm(configuration: configuration, actor: self)
             if let openObserver {
                 await openObserver(.openedBeforePublication)
             }
