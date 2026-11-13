@@ -14,7 +14,7 @@ let package = Package(
     ],
     dependencies: [
 //        .package(url: "https://github.com/lake-of-fire/RealmBinary.git", branch: "main"),
-        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.3"),
+        .package(url: "https://github.com/aehlke/realm-swift.git", revision: "942d071312a56e12f320e4a12dfd05dadde67a55"),
     ],
     targets: [
         .target(
