@@ -307,6 +307,23 @@ public enum RealmReadLockWriteError: Error {
 }
 
 public extension Realm {
+    /// A synchronous write needs the same execution protection as an actor
+    /// write. Admission never hops actors, so this can remain inside an account
+    /// publication fence. The SDK owns rollback on a body/checkpoint error and
+    /// the lease remains retained until commit or rollback has returned.
+    @discardableResult
+    func writeProtectingExecution<Result>(_ operation: () throws -> Result) throws -> Result {
+        let execution = try RealmWriteExecutionProtection.acquireSynchronousLease()
+        defer { execution?.release() }
+        try execution?.checkpoint()
+        return try write {
+            try execution?.checkpoint()
+            let result = try operation()
+            try execution?.checkpoint()
+            return result
+        }
+    }
+
     /// Acquires a read-only source writer lock before this destination's owned
     /// writer admission. Both stores must belong to the same actor and be
     /// physically distinct. The synchronous body may read the source and mutate

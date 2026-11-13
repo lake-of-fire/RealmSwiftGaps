@@ -2,6 +2,88 @@ import XCTest
 import RealmSwift
 @testable import RealmSwiftGaps
 
+private final class SynchronousWriteLeaseState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var interrupted = false
+    private var released = false
+
+    func interrupt() { lock.withLock { interrupted = true } }
+    func release() { lock.withLock { released = true } }
+    var isReleased: Bool { lock.withLock { released } }
+    func checkpoint() throws {
+        if lock.withLock({ interrupted }) { throw CancellationError() }
+    }
+
+    var lease: RealmWriteExecutionLease {
+        RealmWriteExecutionLease(
+            checkpoint: { try self.checkpoint() },
+            installInterruptionHandler: { _ in },
+            release: { self.release() }
+        )
+    }
+}
+
+final class SynchronousRealmWriteExecutionTests: XCTestCase {
+    private func realm() throws -> Realm {
+        var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
+        configuration.objectTypes = [ReadLockedWriteRow.self]
+        return try Realm(configuration: configuration)
+    }
+
+    func testDeniedExecutionNeverStartsMutationAndCanRetry() throws {
+        let realm = try realm()
+        var ranBody = false
+        XCTAssertThrowsError(try RealmWriteExecutionProtection.$synchronousAcquisition.withValue({
+            throw CancellationError()
+        }) {
+            try realm.writeProtectingExecution { ranBody = true }
+        }) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertFalse(ranBody)
+        XCTAssertFalse(realm.isInWriteTransaction)
+        try realm.writeProtectingExecution {
+            let row = ReadLockedWriteRow()
+            row.id = "retry"
+            realm.add(row)
+        }
+        XCTAssertEqual(realm.objects(ReadLockedWriteRow.self).count, 1)
+    }
+
+    func testInterruptionBeforeCommitRollsBackAndReleasesExecution() throws {
+        let realm = try realm()
+        let state = SynchronousWriteLeaseState()
+        XCTAssertThrowsError(try RealmWriteExecutionProtection.$synchronousAcquisition.withValue({ state.lease }) {
+            try realm.writeProtectingExecution {
+                XCTAssertFalse(state.isReleased)
+                let row = ReadLockedWriteRow()
+                row.id = "interrupted"
+                realm.add(row)
+                state.interrupt()
+            }
+        }) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertTrue(state.isReleased)
+        XCTAssertFalse(realm.isInWriteTransaction)
+        XCTAssertTrue(realm.objects(ReadLockedWriteRow.self).isEmpty)
+    }
+
+    func testSuccessfulWriteRetainsExecutionThroughBodyAndCommits() throws {
+        let realm = try realm()
+        let state = SynchronousWriteLeaseState()
+        let result = try RealmWriteExecutionProtection.$synchronousAcquisition.withValue({ state.lease }) {
+            try realm.writeProtectingExecution {
+                XCTAssertFalse(state.isReleased)
+                let row = ReadLockedWriteRow()
+                row.id = "committed"
+                realm.add(row)
+                return 42
+            }
+        }
+        XCTAssertEqual(result, 42)
+        XCTAssertTrue(state.isReleased)
+        XCTAssertFalse(realm.isInWriteTransaction)
+        XCTAssertNotNil(realm.object(ofType: ReadLockedWriteRow.self, forPrimaryKey: "committed"))
+    }
+}
+
 @objc(ManabiRealmReadLockedWriteFixtureRow)
 private final class ReadLockedWriteRow: Object {
     override class func shouldIncludeInDefaultSchema() -> Bool { false }
