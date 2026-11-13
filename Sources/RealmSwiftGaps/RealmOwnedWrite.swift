@@ -56,6 +56,33 @@ public enum RealmWriteExecutionProtection {
         if let acquire { return try await acquire() }
         return try acquireSynchronousLease()
     }
+
+    /// Writable SDK initialization can create, migrate, compact, and lock a
+    /// Realm before the first explicit transaction. Use the synchronous host
+    /// policy so admission introduces no actor hop inside a caller's fence.
+    /// Retain execution until the native initializer has settled on its owner.
+    public static func openRealm<A: Actor>(
+        configuration: Realm.Configuration,
+        actor: isolated A
+    ) async throws -> Realm {
+        try Task.checkCancellation()
+        let execution = configuration.readOnly ? nil : try acquireSynchronousLease()
+        defer { execution?.release() }
+        try execution?.checkpoint()
+        let realm = try await Realm(configuration: configuration, actor: actor)
+        try execution?.checkpoint()
+        try Task.checkCancellation()
+        return realm
+    }
+
+    public static func openRealm(configuration: Realm.Configuration) throws -> Realm {
+        let execution = configuration.readOnly ? nil : try acquireSynchronousLease()
+        defer { execution?.release() }
+        try execution?.checkpoint()
+        let realm = try Realm(configuration: configuration)
+        try execution?.checkpoint()
+        return realm
+    }
 }
 
 // Task-scoped fixture observation at the SDK submission boundary. An observer

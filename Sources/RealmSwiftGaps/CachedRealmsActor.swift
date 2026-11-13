@@ -223,7 +223,7 @@ public extension CachedRealmsActor {
             return cachedRealm
         }
 
-        let realm = try await Realm(configuration: configuration, actor: self)
+        let realm = try await RealmWriteExecutionProtection.openRealm(configuration: configuration, actor: self)
         let openedKey = realmCacheKey(for: configuration)
         guard opensMissingFile || openedKey == originalKey else {
             throw RealmBackgroundActorError.realmFileChangedDuringOpen

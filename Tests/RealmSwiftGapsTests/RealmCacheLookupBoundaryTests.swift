@@ -11,6 +11,38 @@ private final class CacheLookupBoundaryObject: Object {
     override class func shouldIncludeInDefaultSchema() -> Bool { false }
 }
 
+private final class OpenMigrationLeaseProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = 0
+    private var acquisitions = 0
+    private var releases = 0
+    private var expired = false
+    private var migrationProtection = [Bool]()
+
+    func acquire() -> RealmWriteExecutionLease {
+        lock.withLock { active += 1; acquisitions += 1 }
+        return RealmWriteExecutionLease(
+            checkpoint: { if self.lock.withLock({ self.expired }) { throw CancellationError() } },
+            installInterruptionHandler: { _ in },
+            release: { self.lock.withLock { self.active -= 1; self.releases += 1 } })
+    }
+
+    func recordMigration() {
+        lock.withLock { migrationProtection.append(active == 1 && releases == 0) }
+    }
+
+    func expire() { lock.withLock { expired = true } }
+
+    func assertSettled(file: StaticString = #filePath, line: UInt = #line) {
+        lock.withLock {
+            XCTAssertEqual(migrationProtection, [true], file: file, line: line)
+            XCTAssertEqual(acquisitions, 1, file: file, line: line)
+            XCTAssertEqual(releases, 1, file: file, line: line)
+            XCTAssertEqual(active, 0, file: file, line: line)
+        }
+    }
+}
+
 private actor SuspendedLookupCache: CachedRealmsActor {
     nonisolated let lookupCaptured = XCTestExpectation(description: "Cache captured lookup result")
     private var realms = [String: Realm]()
@@ -35,6 +67,10 @@ private actor SuspendedLookupCache: CachedRealmsActor {
     func setCachedRealm(_ realm: Realm, key: String) async { realms[key] = realm }
 
     func armLookup() { shouldSuspendLookup = true }
+
+    func open(configuration: Realm.Configuration) async throws {
+        _ = try await cachedRealm(for: configuration)
+    }
 
     func releaseLookup() {
         released = true
@@ -97,6 +133,108 @@ final class RealmCacheLookupBoundaryTests: XCTestCase {
         }
         await cache.releaseAll()
         try FileManager.default.removeItem(at: root)
+    }
+
+    func testDeniedExecutionPreventsDefaultCacheOpenFromCreatingRealm() async throws {
+        try await withFixture { _, cache, configuration in
+            do {
+                try await RealmWriteExecutionProtection.$synchronousAcquisition.withValue({ throw CancellationError() }) {
+                    try await cache.open(configuration: configuration)
+                }
+                XCTFail("Denied execution must reject the writable SDK open")
+            } catch is CancellationError {}
+            XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(configuration.fileURL).path))
+            let count = await cache.count()
+            XCTAssertEqual(count, 0)
+        }
+    }
+
+    private func migrationConfiguration(
+        from configuration: Realm.Configuration, probe: OpenMigrationLeaseProbe
+    ) throws -> Realm.Configuration {
+        try autoreleasepool {
+            let realm = try Realm(configuration: configuration)
+            try realm.write {
+                let object = CacheLookupBoundaryObject()
+                object.id = "before-migration"
+                realm.add(object)
+            }
+            realm.invalidate()
+        }
+        var migrated = configuration
+        migrated.schemaVersion = configuration.schemaVersion + 1
+        migrated.migrationBlock = { migration, _ in
+            probe.recordMigration()
+            migration.enumerateObjects(ofType: CacheLookupBoundaryObject.className()) { _, object in
+                object?["id"] = "after-migration"
+            }
+        }
+        return migrated
+    }
+
+    func testSynchronousOpenRetainsExecutionThroughRealMigrationAndReleasesAfterward() async throws {
+        try await withFixture { _, _, configuration in
+            let probe = OpenMigrationLeaseProbe()
+            let migrated = try self.migrationConfiguration(from: configuration, probe: probe)
+            try RealmWriteExecutionProtection.$synchronousAcquisition.withValue({ probe.acquire() }) {
+                let realm = try RealmWriteExecutionProtection.openRealm(configuration: migrated)
+                XCTAssertEqual(realm.objects(CacheLookupBoundaryObject.self).first?.id, "after-migration")
+                probe.assertSettled()
+                realm.invalidate()
+            }
+        }
+    }
+
+    func testActorCacheOpenRetainsExecutionThroughRealMigrationAndReleasesAfterward() async throws {
+        try await withFixture { _, cache, configuration in
+            let probe = OpenMigrationLeaseProbe()
+            let migrated = try self.migrationConfiguration(from: configuration, probe: probe)
+            try await RealmWriteExecutionProtection.$synchronousAcquisition.withValue({ probe.acquire() }) {
+                try await cache.open(configuration: migrated)
+                probe.assertSettled()
+                let identifiers = await cache.lookupIdentifiers(configuration: migrated)
+                XCTAssertEqual(identifiers, ["after-migration"])
+            }
+        }
+    }
+
+    func testExecutionExpirationDuringMigrationSettlesWithoutPublishingCacheAndAllowsRetry() async throws {
+        try await withFixture { _, cache, configuration in
+            let probe = OpenMigrationLeaseProbe()
+            var migrated = try self.migrationConfiguration(from: configuration, probe: probe)
+            let migration = migrated.migrationBlock
+            migrated.migrationBlock = { migrationContext, version in
+                migration?(migrationContext, version)
+                probe.expire()
+            }
+            do {
+                try await RealmWriteExecutionProtection.$synchronousAcquisition.withValue({ probe.acquire() }) {
+                    try await cache.open(configuration: migrated)
+                }
+                XCTFail("Expired execution must not publish the opened Realm")
+            } catch is CancellationError {}
+            probe.assertSettled()
+            let count = await cache.count()
+            XCTAssertEqual(count, 0)
+            try await cache.open(configuration: migrated)
+            let identifiers = await cache.lookupIdentifiers(configuration: migrated)
+            XCTAssertEqual(identifiers, ["after-migration"], "Native migration settled before protection ended")
+        }
+    }
+
+    func testDeniedExecutionPreventsSharedWriterOpenFromCreatingRealm() async throws {
+        try await withFixture { _, _, configuration in
+            do {
+                try await RealmWriteExecutionProtection.$synchronousAcquisition.withValue({ throw CancellationError() }) {
+                    try await RealmBackgroundActor.shared.write(configuration: configuration) { _ in
+                        XCTFail("Denied execution must not enter the writer body")
+                    }
+                }
+                XCTFail("Denied execution must reject the writer")
+            } catch is CancellationError {}
+            XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(configuration.fileURL).path))
+            _ = await RealmBackgroundActor.shared.removeCachedRealm(for: configuration)
+        }
     }
 
     func testMissingReadOnlyLookupDoesNotOpenOrCreateARealm() async throws {
