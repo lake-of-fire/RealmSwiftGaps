@@ -73,6 +73,16 @@ final class SecondCachedRealmObject: Object {
     @Persisted(primaryKey: true) var id = ""
 }
 
+#if DEBUG
+private final class RealmWriteLifecycleRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = [String]()
+
+    func append(_ event: String) { lock.withLock { storage.append(event) } }
+    var events: [String] { lock.withLock { storage } }
+}
+#endif
+
 private actor RealmOpenBarrier {
     nonisolated let publicationObserved = XCTestExpectation(description: "Realm open reached publication")
     nonisolated let joinObserved = XCTestExpectation(description: "Caller joined pending open")
@@ -579,6 +589,48 @@ final class RealmSwiftGapsTests: XCTestCase {
         XCTAssertEqual(value, 73)
         XCTAssertTrue(caller.isCancelled)
     }
+
+#if DEBUG
+    @RealmBackgroundActor
+    func test_ownedWriteLifecycleObservationTracksRealRealmCommit() async throws {
+        let configuration = Realm.Configuration(
+            inMemoryIdentifier: UUID().uuidString,
+            objectTypes: [FirstCachedRealmObject.self]
+        )
+        let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+        let recorder = RealmWriteLifecycleRecorder()
+        let value = try await RealmWriteLifecycleObservation.$didAdmit.withValue({
+            recorder.append("admitted")
+        }) {
+            try await RealmWriteLifecycleObservation.$didStartBody.withValue({
+                recorder.append("body")
+            }) {
+                try await RealmWriteLifecycleObservation.$didSubmitCommit.withValue({
+                    recorder.append("commit-submitted")
+                }) {
+                    try await RealmWriteLifecycleObservation.$didSettle.withValue({
+                        recorder.append("settled")
+                    }) {
+                        try await realm.asyncWritePreservingOwnership {
+                            let object = FirstCachedRealmObject()
+                            object.id = "lifecycle-observed"
+                            object.value = 17
+                            realm.add(object)
+                            return object.value
+                        }
+                    }
+                }
+            }
+        }
+
+        XCTAssertEqual(value, 17)
+        XCTAssertEqual(realm.object(
+            ofType: FirstCachedRealmObject.self,
+            forPrimaryKey: "lifecycle-observed"
+        )?.value, 17)
+        XCTAssertEqual(recorder.events, ["admitted", "body", "commit-submitted", "settled"])
+    }
+#endif
 
     func test_publicOwnedWrite_synchronousCommitPreservesNotificationSuccessorTransaction() async throws {
         let owner = IndependentRealmWriteOwner()

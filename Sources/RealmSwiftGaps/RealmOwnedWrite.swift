@@ -2,6 +2,62 @@ import Foundation
 import RealmSwift
 import Realm.Private
 
+/// Execution protection for an actual owned write, independent of the task
+/// that requested it. Acquisition happens before any SDK begin ticket; release
+/// happens only after rollback or asynchronous commit settlement.
+public struct RealmWriteExecutionLease: Sendable {
+    public let checkpoint: @Sendable () throws -> Void
+    public let installInterruptionHandler: @Sendable (@escaping @Sendable () -> Void) -> Void
+    public let release: @Sendable () -> Void
+
+    public init(
+        checkpoint: @escaping @Sendable () throws -> Void,
+        installInterruptionHandler: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void,
+        release: @escaping @Sendable () -> Void
+    ) {
+        self.checkpoint = checkpoint
+        self.installInterruptionHandler = installInterruptionHandler
+        self.release = release
+    }
+}
+
+/// An execution policy inherited by short and long-lived child tasks. Each
+/// write acquires a fresh lease; no retired per-attempt lease is inherited.
+public enum RealmWriteExecutionProtection {
+    public typealias Acquisition = @Sendable () async throws -> RealmWriteExecutionLease
+    public typealias SynchronousAcquisition = @Sendable () throws -> RealmWriteExecutionLease
+    @TaskLocal public static var acquire: Acquisition? = nil
+    @TaskLocal public static var synchronousAcquisition: SynchronousAcquisition? = nil
+
+    private final class DefaultAcquisition: @unchecked Sendable {
+        let lock = NSLock()
+        var value: SynchronousAcquisition?
+    }
+    private static let defaultAcquisition = DefaultAcquisition()
+
+    /// Install at application startup, before creating background workers.
+    /// The host supplies its platform execution API; this package stays usable
+    /// by extensions and non-UIKit clients with their existing execution owner.
+    public static func installDefaultSynchronousAcquisition(
+        _ acquisition: @escaping SynchronousAcquisition
+    ) {
+        defaultAcquisition.lock.withLock { defaultAcquisition.value = acquisition }
+    }
+
+    /// Also protects synchronous file-lock scopes. This must not perform an
+    /// actor hop: callers may already hold an account or database fence.
+    public static func acquireSynchronousLease() throws -> RealmWriteExecutionLease? {
+        let acquisition = synchronousAcquisition
+            ?? defaultAcquisition.lock.withLock { defaultAcquisition.value }
+        return try acquisition?()
+    }
+
+    static func acquireLease() async throws -> RealmWriteExecutionLease? {
+        if let acquire { return try await acquire() }
+        return try acquireSynchronousLease()
+    }
+}
+
 // Task-scoped fixture observation at the SDK submission boundary. An observer
 // may enqueue a turn on the owning actor, but must not suspend this caller:
 // The writer queues its SDK begin ticket before its first suspension on that actor.
@@ -16,6 +72,18 @@ enum RealmWriteSubmissionObservation {
 enum RealmWriteCommitObservation {
     @TaskLocal static var didSubmit: (@Sendable () -> Void)? = nil
 }
+
+#if DEBUG
+/// Test-only observation of the real owned-write lifecycle. Callbacks are
+/// synchronous and TaskLocal so tests observe the same commit bridge used by
+/// production writes without adding a suspension or global mutable hook.
+public enum RealmWriteLifecycleObservation {
+    @TaskLocal public static var didAdmit: (@Sendable () -> Void)? = nil
+    @TaskLocal public static var didStartBody: (@Sendable () -> Void)? = nil
+    @TaskLocal public static var didSubmitCommit: (@Sendable () -> Void)? = nil
+    @TaskLocal public static var didSettle: (@Sendable () -> Void)? = nil
+}
+#endif
 
 // This unchecked carrier never transfers a Realm or closure to another task.
 // It carries non-Sendable values through an isolated call on the Realm owner.
@@ -33,11 +101,30 @@ private enum RealmOwnedWriteBridge {
     static func perform<Result>(
         actor: isolated any Actor,
         realm: RealmWriteUnchecked<Realm>,
-        operation: RealmWriteUnchecked<() throws -> Result>
+        operation: RealmWriteUnchecked<() throws -> Result>,
+        inheritedExecutionLease: RealmWriteExecutionLease? = nil
     ) async throws -> RealmWriteUnchecked<Result> {
         let realm = realm.value
-        try await admit(actor: actor, realm: realm)
-        let completion = try performAdmittedOperation(in: realm, operation: operation.value)
+        try Task.checkCancellation()
+        let ownedExecutionLease: RealmWriteExecutionLease?
+        let executionLease: RealmWriteExecutionLease?
+        if let inheritedExecutionLease {
+            ownedExecutionLease = nil
+            executionLease = inheritedExecutionLease
+        } else {
+            ownedExecutionLease = try await RealmWriteExecutionProtection.acquireLease()
+            executionLease = ownedExecutionLease
+        }
+        defer { ownedExecutionLease?.release() }
+        try executionLease?.checkpoint()
+        try await admit(actor: actor, realm: realm, executionLease: executionLease)
+#if DEBUG
+        RealmWriteLifecycleObservation.didAdmit?()
+#endif
+        let completion = try performAdmittedOperation(
+            in: realm, executionCheckpoint: executionLease?.checkpoint,
+            operation: operation.value
+        )
         if completion.needsCommit {
             // Cancellation after commit submission cannot undo the commit.
             // Never cancel its completion callback: success means durable state.
@@ -46,16 +133,28 @@ private enum RealmOwnedWriteBridge {
                     continuation.resume(returning: error)
                 }
                 RealmWriteCommitObservation.didSubmit?()
+#if DEBUG
+                RealmWriteLifecycleObservation.didSubmitCommit?()
+#endif
             }
+#if DEBUG
+            RealmWriteLifecycleObservation.didSettle?()
+#endif
             if let error { throw error }
         }
         return RealmWriteUnchecked(completion.value)
     }
 
-    private static func admit(actor: isolated any Actor, realm: Realm) async throws {
+    private static func admit(
+        actor: isolated any Actor, realm: Realm,
+        executionLease: RealmWriteExecutionLease? = nil
+    ) async throws {
         try Task.checkCancellation()
+        try executionLease?.checkpoint()
         RealmWriteSubmissionObservation.willSubmit?()
         let signal = RealmWriteAdmissionSignal()
+        executionLease?.installInterruptionHandler { signal.cancel() }
+        try executionLease?.checkpoint()
         let begin = ObjectiveCSupport.convert(object: realm).beginAsyncWrite()
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -103,7 +202,13 @@ private enum RealmOwnedWriteBridge {
         guard nativeSource !== nativeDestination, !sameMemory, !sameFile else {
             throw RealmReadLockWriteError.identicalStore
         }
-        try await admit(actor: actor, realm: source)
+        // Acquire before the source lock. The destination reuses this exact
+        // lease, so there is no MainActor admission hop while that lock is held.
+        try Task.checkCancellation()
+        let executionLease = try await RealmWriteExecutionProtection.acquireLease()
+        defer { executionLease?.release() }
+        try executionLease?.checkpoint()
+        try await admit(actor: actor, realm: source, executionLease: executionLease)
         // Unlike the single-writer witness, this one spans destination admission.
         // The source is deliberately read-only, and its physical writer lock is
         // retained until the destination settles. Never commit this transaction.
@@ -123,7 +228,8 @@ private enum RealmOwnedWriteBridge {
                     throw RealmReadLockWriteError.sourceOwnershipLost
                 }
                 return try operation.value()
-            }
+            },
+            inheritedExecutionLease: executionLease
         )
     }
 
@@ -137,6 +243,7 @@ private enum RealmOwnedWriteBridge {
     /// review it alongside the private begin-ticket contract on SDK upgrades.
     private static func performAdmittedOperation<Result>(
         in realm: Realm,
+        executionCheckpoint: (@Sendable () throws -> Void)?,
         operation: () throws -> Result
     ) throws -> (value: Result, needsCommit: Bool) {
         let admittedVersion = ObjectiveCSupport.convert(object: realm.freeze())
@@ -146,11 +253,18 @@ private enum RealmOwnedWriteBridge {
         }
         do {
             try Task.checkCancellation()
+            try executionCheckpoint?()
+#if DEBUG
+            RealmWriteLifecycleObservation.didStartBody?()
+#endif
             let result = try operation()
             let needsCommit = stillOwnsOpenWrite()
             // Once a caller committed synchronously, neither cancellation nor
             // automatic settlement may touch a notification's successor write.
-            if needsCommit { try Task.checkCancellation() }
+            if needsCommit {
+                try Task.checkCancellation()
+                try executionCheckpoint?()
+            }
             return (result, needsCommit)
         } catch {
             if stillOwnsOpenWrite() { realm.cancelWrite() }
