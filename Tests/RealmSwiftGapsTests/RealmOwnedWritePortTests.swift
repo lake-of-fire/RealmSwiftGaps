@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 import RealmSwift
 import XCTest
@@ -326,3 +327,5 @@ private final class OwnedWritePortFixture: Object, @unchecked Sendable {
     @Persisted var value = 0
     override class func shouldIncludeInDefaultSchema() -> Bool { false }
 }
+
+#endif

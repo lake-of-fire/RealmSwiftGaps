@@ -32,6 +32,9 @@ public extension CachedRealmsActor {
             realmCacheKey(for: configuration)
         }
         let realm = try await cachedRealm(for: configuration)
+#if DEBUG
+        if let didOpenRealm = RealmStorageAdmissionObservation.didOpenRealm { await didOpenRealm() }
+#endif
         try Task.checkCancellation()
         guard storageAdmission.matchesCurrentStorageIdentity({ realmCacheKey(for: configuration) }) else {
             throw RealmBackgroundActorError.realmFileChangedDuringOpen
@@ -104,7 +107,7 @@ public extension CachedRealmsActor {
             return cachedRealm
         }
 
-        let realm = try await Realm(configuration: configuration, actor: self)
+        let realm = try await RealmWriteExecutionProtection.openRealm(configuration: configuration, actor: self)
         let openedKey = realmCacheKey(for: configuration)
         guard opensMissingFile || openedKey == originalKey else {
             throw RealmBackgroundActorError.realmFileChangedDuringOpen
@@ -123,7 +126,7 @@ public extension CachedRealmsActor {
         }
         return realm
     }
-    
+
     @inline(__always)
     public func existingCachedRealm(for configuration: Realm.Configuration) async -> Realm? {
         let key = realmCacheKey(for: configuration)
@@ -133,7 +136,7 @@ public extension CachedRealmsActor {
         guard realmCacheKey(for: configuration) == key else { return nil }
         return realm
     }
-    
+
     // A live Realm does not expose the filesystem identity that admitted its
     // open. Recomputing identity from its configured path can relabel a retired
     // handle as a replacement store. Keep an actionable diagnostic for callers.

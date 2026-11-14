@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 import RealmSwift
 import XCTest
@@ -543,3 +544,5 @@ final class RealmOpenFencingPortTests: XCTestCase {
         XCTAssertNotEqual(baselineKey, limitedKey)
     }
 }
+
+#endif

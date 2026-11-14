@@ -2,6 +2,91 @@ import Foundation
 import RealmSwift
 import Realm.Private
 
+/// A host assertion belongs to the storage operation, through unlock or durable
+/// commit settlement. Expiration requests interruption; it does not release it.
+public struct RealmWriteExecutionLease: Sendable {
+    public let checkpoint: @Sendable () throws -> Void
+    public let installInterruptionHandler: @Sendable (@escaping @Sendable () -> Void) -> Void
+    public let release: @Sendable () -> Void
+
+    public init(
+        checkpoint: @escaping @Sendable () throws -> Void,
+        installInterruptionHandler: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void,
+        release: @escaping @Sendable () -> Void
+    ) {
+        self.checkpoint = checkpoint
+        self.installInterruptionHandler = installInterruptionHandler
+        self.release = release
+    }
+}
+
+public enum RealmWriteExecutionProtection {
+    public typealias Acquisition = @Sendable () throws -> RealmWriteExecutionLease
+    @TaskLocal public static var synchronousAcquisition: Acquisition? = nil
+
+    private final class Policy: @unchecked Sendable {
+        let lock = NSLock()
+        var acquisition: Acquisition?
+    }
+    private static let policy = Policy()
+
+    /// Install before workers start. Acquisition must not hop actors: callers
+    /// may already hold an account or database publication fence.
+    public static func installDefaultSynchronousAcquisition(_ acquisition: @escaping Acquisition) {
+        policy.lock.withLock { policy.acquisition = acquisition }
+    }
+
+    public static func acquireSynchronousLease() throws -> RealmWriteExecutionLease? {
+        let acquisition = synchronousAcquisition ?? policy.lock.withLock { policy.acquisition }
+        return try acquisition?()
+    }
+
+    public static func openRealm<A: Actor>(configuration: Realm.Configuration, actor: isolated A) async throws -> Realm {
+        try Task.checkCancellation()
+        let execution = configuration.readOnly ? nil : try acquireSynchronousLease()
+        defer { execution?.release() }
+        try execution?.checkpoint()
+        let realm = try await Realm(configuration: configuration, actor: actor)
+        try execution?.checkpoint()
+        try Task.checkCancellation()
+        return realm
+    }
+
+    public static func openRealm(configuration: Realm.Configuration) throws -> Realm {
+        let execution = configuration.readOnly ? nil : try acquireSynchronousLease()
+        defer { execution?.release() }
+        try execution?.checkpoint()
+        let realm = try Realm(configuration: configuration)
+        try execution?.checkpoint()
+        return realm
+    }
+
+#if compiler(>=6)
+    /// Matches Realm.open's inferred actor isolation while protecting cold
+    /// initialization, migration and compaction through SDK settlement.
+    public static func open(
+        configuration: Realm.Configuration = .defaultConfiguration,
+        _isolation actor: isolated any Actor = #isolation
+    ) async throws -> Realm {
+        try Task.checkCancellation()
+        let execution = configuration.readOnly ? nil : try acquireSynchronousLease()
+        defer { execution?.release() }
+        try execution?.checkpoint()
+        let realm = try await Realm.open(configuration: configuration, _isolation: actor)
+        try execution?.checkpoint()
+        try Task.checkCancellation()
+        return realm
+    }
+#endif
+}
+
+/// A synchronous boundary cannot borrow a write admitted for another task.
+/// Async entry points should queue through asyncWritePreservingOwnership.
+public enum RealmWriteOwnershipError: Error, Equatable {
+    case transactionAlreadyOpen
+}
+
+#if DEBUG
 // Task-scoped fixture observation at the SDK submission boundary. An observer
 // may enqueue a turn on the owning actor, but must not suspend this caller:
 // The writer queues its SDK begin ticket before its first suspension on that actor.
@@ -17,6 +102,14 @@ enum RealmWriteCommitObservation {
     @TaskLocal static var didSubmit: (@Sendable () -> Void)? = nil
 }
 
+// Observes cancellation before the owning actor settles its native begin ticket.
+// No observer is installed in production.
+enum RealmWriteCancellationObservation {
+    @TaskLocal static var didCancelBeforeAdmission: (@Sendable () -> Void)? = nil
+}
+
+#endif
+
 // This unchecked carrier never transfers a Realm or closure to another task.
 // It carries non-Sendable values through an isolated call on the Realm owner.
 private struct RealmWriteUnchecked<Value>: @unchecked Sendable {
@@ -24,12 +117,7 @@ private struct RealmWriteUnchecked<Value>: @unchecked Sendable {
     init(_ value: Value) { self.value = value }
 }
 
-// Realm 20.0.3 (manifest minimum), 20.0.4 (retained lock), and 20.0.5
-// queue the same notify-only begin ticket through Realm.Private. The private
-// task/Realm headers and implementation, ObjectiveCSupport conversion and
-// module map are identical across those sources; Core's ownership loop is
-// also unchanged. See Docs/Porting/20261010-sync-slice.md in BigSyncKit for
-// exact SDK/Core identities and the source-only compatibility review. SDK
+// Realm 20.0.5 queues a notify-only begin ticket through Realm.Private. SDK
 // asyncWrite cancellation can resume a queued waiter and then cancel another
 // caller's open transaction. Track admission independently and cancel only our
 // begin ticket. Review this private SDK contract whenever Realm is upgraded;
@@ -42,8 +130,15 @@ private enum RealmOwnedWriteBridge {
     ) async throws -> RealmWriteUnchecked<Result> {
         let realm = realm.value
         try Task.checkCancellation()
+        let execution = try RealmWriteExecutionProtection.acquireSynchronousLease()
+        defer { execution?.release() }
+        try execution?.checkpoint()
+#if DEBUG
         RealmWriteSubmissionObservation.willSubmit?()
+#endif
         let signal = RealmWriteAdmissionSignal()
+        execution?.installInterruptionHandler { signal.cancel() }
+        try execution?.checkpoint()
         let begin = ObjectiveCSupport.convert(object: realm).beginAsyncWrite()
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -59,10 +154,27 @@ private enum RealmOwnedWriteBridge {
         // mistaken for admission. Only actual admission grants rollback rights.
         let admitted = signal.disarmAndTakeAdmission()
         if !admitted {
-            begin.complete(true)
-            throw CancellationError()
+#if DEBUG
+            RealmWriteCancellationObservation.didCancelBeforeAdmission?()
+#endif
+            if realm.isPerformingAsynchronousWriteOperations && !realm.isInWriteTransaction {
+                // Removing the SDK ticket cannot cancel a native mutex request
+                // already submitted by Realm. Keep our ticket until admission:
+                // otherwise the native engine can acquire the lock after this
+                // caller has reported cancellation and the host has suspended.
+                // The normal cancellation check below rolls back only our write.
+                await withCheckedContinuation { continuation in
+                    begin.wait { continuation.resume() }
+                }
+            } else {
+                // Queued behind another transaction on this same Realm: our
+                // ticket has not requested a native lock independently. Remove
+                // only this ticket without waiting for or touching its owner.
+                begin.complete(true)
+                throw CancellationError()
+            }
         }
-        let completion = try performAdmittedOperation(in: realm, operation: operation.value)
+        let completion = try performAdmittedOperation(in: realm, checkpoint: execution?.checkpoint, operation: operation.value)
         if completion.needsCommit {
             // Cancellation after commit submission cannot undo the commit.
             // Never cancel its completion callback: success means durable state.
@@ -70,7 +182,9 @@ private enum RealmOwnedWriteBridge {
                 realm.commitAsyncWrite(allowGrouping: false) { error in
                     continuation.resume(returning: error)
                 }
+#if DEBUG
                 RealmWriteCommitObservation.didSubmit?()
+#endif
             }
             if let error { throw error }
         }
@@ -87,6 +201,7 @@ private enum RealmOwnedWriteBridge {
     /// review it alongside the private begin-ticket contract on SDK upgrades.
     private static func performAdmittedOperation<Result>(
         in realm: Realm,
+        checkpoint: (@Sendable () throws -> Void)?,
         operation: () throws -> Result
     ) throws -> (value: Result, needsCommit: Bool) {
         let admittedVersion = ObjectiveCSupport.convert(object: realm.freeze())
@@ -96,11 +211,15 @@ private enum RealmOwnedWriteBridge {
         }
         do {
             try Task.checkCancellation()
+            try checkpoint?()
             let result = try operation()
             let needsCommit = stillOwnsOpenWrite()
             // Once a caller committed synchronously, neither cancellation nor
             // automatic settlement may touch a notification's successor write.
-            if needsCommit { try Task.checkCancellation() }
+            if needsCommit {
+                try Task.checkCancellation()
+                try checkpoint?()
+            }
             return (result, needsCommit)
         } catch {
             if stillOwnsOpenWrite() { realm.cancelWrite() }
@@ -114,7 +233,8 @@ public extension Realm {
     /// Queues an independent transaction on that actor in the calling task.
     /// The operation and its result stay on that actor; task-local
     /// values, cancellation and priority remain those of the structured caller.
-    /// Cancellation before admission cancels only this request. Once admitted,
+    /// Cancellation before admission cancels only this request, awaiting any
+    /// already-submitted native mutex acquisition before rolling it back. Once admitted,
     /// cancellation or an operation error rolls back this transaction. After
     /// commit submission, the call awaits durable settlement even if cancelled.
     /// Synchronous commits are supported, including notification callbacks that

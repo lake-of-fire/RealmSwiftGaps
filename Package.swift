@@ -14,7 +14,9 @@ let package = Package(
     ],
     dependencies: [
 //        .package(url: "https://github.com/lake-of-fire/RealmBinary.git", branch: "main"),
-        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.3"),
+        // The private native begin-ticket/version-witness contract is reviewed
+        // against this exact SDK. Requalify ownership before changing it.
+        .package(url: "https://github.com/realm/realm-swift.git", exact: "20.0.5"),
     ],
     targets: [
         .target(
@@ -25,6 +27,9 @@ let package = Package(
             ]),
         .testTarget(
             name: "RealmSwiftGapsTests",
-            dependencies: ["RealmSwiftGaps"]),
+            dependencies: [
+                "RealmSwiftGaps",
+                .product(name: "RealmSwift", package: "realm-swift"),
+            ]),
     ]
 )
