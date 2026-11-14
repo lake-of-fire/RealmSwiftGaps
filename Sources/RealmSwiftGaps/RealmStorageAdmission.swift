@@ -7,6 +7,13 @@ import Darwin
 import Glibc
 #endif
 
+#if DEBUG
+// Task-scoped test suspension after opening, before captured-store validation.
+enum RealmStorageAdmissionObservation {
+    @TaskLocal static var didOpenRealm: (@Sendable () async -> Void)? = nil
+}
+#endif
+
 /// A captured store boundary. Only its owning admission may advance a missing
 /// file to the identity of a file it exclusively creates. Overlapping captures
 /// may share that pending owner; an externally appearing file is

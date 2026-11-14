@@ -32,6 +32,9 @@ public extension CachedRealmsActor {
             realmCacheKey(for: configuration)
         }
         let realm = try await cachedRealm(for: configuration)
+#if DEBUG
+        if let didOpenRealm = RealmStorageAdmissionObservation.didOpenRealm { await didOpenRealm() }
+#endif
         try Task.checkCancellation()
         guard storageAdmission.matchesCurrentStorageIdentity({ realmCacheKey(for: configuration) }) else {
             throw RealmBackgroundActorError.realmFileChangedDuringOpen
