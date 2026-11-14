@@ -65,26 +65,22 @@ public extension Realm {
         return try writeIfAvailable(block)
     }
 
-    static func writeAsync<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration, block: @escaping ((Realm, T) throws -> Void)) {
+    @discardableResult
+    static func writeAsync<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration, block: @escaping ((Realm, T) throws -> Void)) -> Task<Void, Swift.Error> {
         let ref = ThreadSafeReference(to: passedObject)
-        Task { @RealmBackgroundActor in
-            do {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try await realm.asyncWritePreservingOwnership {
-                    guard let object = realm.resolve(ref) else { return }
-                    try block(realm, object)
-                }
+        return Task { @RealmBackgroundActor in
+            try await RealmBackgroundActor.shared.write(configuration: configuration) { realm in
+                guard let object = realm.resolve(ref) else { return }
+                try block(realm, object)
             }
         }
     }
     
-    static func writeAsync(configuration: Realm.Configuration, block: @escaping ((Realm) throws -> Void)) {
-        Task { @RealmBackgroundActor in
-            do {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try await realm.asyncWritePreservingOwnership {
-                    try block(realm)
-                }
+    @discardableResult
+    static func writeAsync(configuration: Realm.Configuration, block: @escaping ((Realm) throws -> Void)) -> Task<Void, Swift.Error> {
+        return Task { @RealmBackgroundActor in
+            try await RealmBackgroundActor.shared.write(configuration: configuration) { realm in
+                try block(realm)
             }
         }
     }
@@ -92,38 +88,29 @@ public extension Realm {
     @_unsafeInheritExecutor
     static func asyncWrite(configuration: Realm.Configuration, block: @escaping ((Realm) throws -> Void)) async throws {
         try await { @RealmBackgroundActor in
-            do {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try await realm.asyncWritePreservingOwnership {
-                    try block(realm)
-                }
+            try await RealmBackgroundActor.shared.write(configuration: configuration) { realm in
+                try block(realm)
             }
         }()
     }
-    
+
     @_unsafeInheritExecutor
     static func asyncWrite<T: ThreadConfined>(_ passedObject: ThreadSafeReference<T>, configuration: Realm.Configuration, block: @escaping ((Realm, T) throws -> Void)) async throws {
         try await { @RealmBackgroundActor in
-            do {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try await realm.asyncWritePreservingOwnership {
-                    guard let object = realm.resolve(passedObject) else { return }
-                    try block(realm, object)
-                }
+            try await RealmBackgroundActor.shared.write(configuration: configuration) { realm in
+                guard let object = realm.resolve(passedObject) else { return }
+                try block(realm, object)
             }
         }()
     }
-    
+
     @_unsafeInheritExecutor
     static func asyncWrite<T: ThreadConfined>(_ passedObjects: [ThreadSafeReference<T>], configuration: Realm.Configuration, block: @escaping ((Realm, T) throws -> Void)) async throws {
         try await { @RealmBackgroundActor in
-            do {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration) 
-                try await realm.asyncWritePreservingOwnership {
-                    for reference in passedObjects {
-                        guard let object = realm.resolve(reference) else { continue }
-                        try block(realm, object)
-                    }
+            try await RealmBackgroundActor.shared.write(configuration: configuration) { realm in
+                let objects = passedObjects.compactMap { realm.resolve($0) }
+                for object in objects {
+                    try block(realm, object)
                 }
             }
         }()
@@ -189,6 +176,7 @@ extension URL: FailableCustomPersistable {
         self = url
     }
     
+    @inline(__always)
     public var persistableValue: String {
         absoluteString
     }
@@ -199,10 +187,11 @@ extension URL: FailableCustomPersistable {
 }
 
 public extension Object {
+    @inline(__always)
     var primaryKeyValue: String? {
         guard let pkName = type(of: self).sharedSchema()?.primaryKeyProperty?.name else { return nil }
         guard let pkType = type(of: self).sharedSchema()?.primaryKeyProperty?.type else { return nil }
-        guard let pkValue = self[pkName] else { return nil }
+        guard let pkValue = self.value(forKey: pkName) else { return nil }
         switch pkType {
         case .UUID:
             return (pkValue as? UUID)?.uuidString
@@ -211,6 +200,7 @@ public extension Object {
         }
     }
     
+    @inline(__always)
     func isSameObjectByPrimaryKey(as other: Object?) -> Bool {
         guard let other = other else { return false }
         guard type(of: self) == type(of: other) else { return false }

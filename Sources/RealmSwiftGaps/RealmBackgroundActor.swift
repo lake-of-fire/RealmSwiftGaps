@@ -9,19 +9,12 @@ public enum RealmBackgroundActorError: Error {
     case realmFileChangedDuringOpen
 }
 
-
 #if DEBUG
 // Instance-scoped suspension points for deterministic cache lifecycle tests.
 enum RealmCacheOpenEvent: Hashable, Sendable {
     case openedBeforePublication
     case joinedPendingOpen
     case waiterResolvedPendingOpen
-}
-
-// Captured-admission tests suspend after the real open, before its identity is
-// handed to a mutation or another actor. Production installs no observation.
-enum RealmStorageAdmissionObservation {
-    @TaskLocal static var didOpenRealm: (@Sendable () async -> Void)? = nil
 }
 
 #endif
@@ -39,7 +32,7 @@ public actor RealmBackgroundActor: CachedRealmsActor {
 
     private var openObserver: (@Sendable (RealmCacheOpenEvent) async -> Void)?
 #endif
-    
+
     public var cachedRealms = [String: RealmSwift.Realm]()
     // Realm's async actor-bound initializer suspends while the file/group is
     // opened.  A second caller can therefore enter this actor before the
@@ -47,11 +40,11 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     // the actor so startup callers share one initialization instead of
     // concurrently opening the same in-memory group.
     private var pendingRealmOpens = [String: Task<String, Error>]()
-    
+
     public func getCachedRealm(key: String) async -> Realm? {
         return cachedRealms[key]
     }
-    
+
     public func setCachedRealm(_ realm: Realm, key: String) async {
         cachedRealms[key] = realm
     }
@@ -119,33 +112,6 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         return try realmForCompletedOpen(key: openedKey, configuration: configuration)
     }
 
-    public func cachedRealm(
-        for configuration: Realm.Configuration,
-        storageAdmission: RealmStorageAdmission
-    ) async throws -> Realm {
-        try Task.checkCancellation()
-        try storageAdmission.admitCreation(configuration: configuration) {
-            realmCacheKey(for: configuration)
-        }
-        let realm = try await cachedRealm(for: configuration)
-#if DEBUG
-        if let didOpenRealm = RealmStorageAdmissionObservation.didOpenRealm { await didOpenRealm() }
-#endif
-        guard storageAdmission.matchesCurrentStorageIdentity({ realmCacheKey(for: configuration) }) else {
-            throw RealmBackgroundActorError.realmFileChangedDuringOpen
-        }
-        return realm
-    }
-
-    /// Read actors may prepare the captured store without receiving a Realm
-    /// belonging to this writer actor. They open their own instance afterward.
-    public func prepareStorage(
-        for configuration: Realm.Configuration,
-        storageAdmission: RealmStorageAdmission
-    ) async throws {
-        _ = try await cachedRealm(for: configuration, storageAdmission: storageAdmission)
-    }
-
     private func realmForCompletedOpen(key: String, configuration: Realm.Configuration) throws -> Realm {
         // Another actor turn can replace the file or evict the cache between
         // publication and a waiter's resumption. Revalidate without suspension
@@ -159,21 +125,6 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         return realm
     }
 
-    /// Releases an explicitly scoped Realm when its configuration is no longer
-    /// needed. Production configurations remain cached for the actor lifetime,
-    /// while callers that create transient configurations can bound their file
-    /// descriptor usage. Call after users and pending opens/writes have quiesced,
-    /// before replacing its file. This does not close independently held Realms
-    /// or coordinate another actor/process. An active transaction is never evicted.
-    @discardableResult
-    public func removeCachedRealm(for configuration: Realm.Configuration) -> Bool {
-        let key = realmCacheKey(for: configuration)
-        guard let realm = cachedRealms[key], !realm.isInWriteTransaction else { return false }
-        cachedRealms.removeValue(forKey: key)
-        realm.invalidate()
-        return true
-    }
-
     public func run(_ operation: @escaping () async throws -> Void) async {
         do {
             try await operation()
@@ -181,22 +132,29 @@ public actor RealmBackgroundActor: CachedRealmsActor {
             print("Realm operation failed: \(error.localizedDescription)")
         }
     }
-    
-    public func write(configuration: Realm.Configuration, operation: @escaping (Realm) throws -> Void) async throws {
+
+    @inline(__always)
+    public func write(configuration: Realm.Configuration, operation: @escaping (RealmSwift.Realm) throws -> Void) async throws {
+        try Task.checkCancellation()
         let realm = try await cachedRealm(for: configuration)
+        try Task.checkCancellation()
         try await write(in: realm, operation: operation)
     }
 
-    func write(in realm: Realm, operation: (Realm) throws -> Void) async throws {
+    // Independent submissions queue behind another task's admitted write.
+    // Keep writeIfNeeded for callers intentionally joining their own transaction.
+    func write(in realm: RealmSwift.Realm, operation: (RealmSwift.Realm) throws -> Void) async throws {
         try await realm.asyncWritePreservingOwnership { try operation(realm) }
     }
 
-    public func write<T: ThreadConfined>(_ reference: ThreadSafeReference<T>, configuration: Realm.Configuration, operation: @escaping (Realm, T) throws -> Void) async throws {
+    @inline(__always)
+    public func write<T: ThreadConfined>(_ reference: ThreadSafeReference<T>, configuration: Realm.Configuration, operation: @escaping (RealmSwift.Realm, T) throws -> Void) async throws {
+        try Task.checkCancellation()
         let realm = try await cachedRealm(for: configuration)
+        try Task.checkCancellation()
+
         try await write(in: realm) { realm in
-            guard let resolvedObject = realm.resolve(reference) else {
-                throw RealmBackgroundActorError.unableToResolveObject
-            }
+            guard let resolvedObject = realm.resolve(reference) else { throw RealmBackgroundActorError.unableToResolveObject }
             try operation(realm, resolvedObject)
         }
     }

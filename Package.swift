@@ -5,24 +5,24 @@ import PackageDescription
 
 let package = Package(
     name: "RealmSwiftGaps",
-    platforms: [.macOS("15.0"), .iOS(.v15)],
+    platforms: [.macOS(.v12), .iOS(.v15)],
     products: [
         .library(
             name: "RealmSwiftGaps",
-            type: .static,
+            type: .dynamic,
             targets: ["RealmSwiftGaps"]),
     ],
     dependencies: [
-        // The owned-write bridge relies on Realm.Private begin tickets and
-        // frozen-version identity reviewed against this exact SDK. Requalify
-        // those contracts before advancing Realm; consumer lockfiles alone
-        // cannot constrain fresh package resolutions.
+//        .package(url: "https://github.com/lake-of-fire/RealmBinary.git", branch: "main"),
+        // The private native begin-ticket/version-witness contract is reviewed
+        // against this exact SDK. Requalify ownership before changing it.
         .package(url: "https://github.com/realm/realm-swift.git", exact: "20.0.5"),
     ],
     targets: [
         .target(
             name: "RealmSwiftGaps",
             dependencies: [
+//                .product(name: "RealmSwift", package: "RealmBinary"),
                 .product(name: "RealmSwift", package: "realm-swift"),
             ]),
         .testTarget(
