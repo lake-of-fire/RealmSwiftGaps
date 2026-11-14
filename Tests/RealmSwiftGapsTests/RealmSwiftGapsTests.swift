@@ -72,6 +72,7 @@ final class SecondCachedRealmObject: Object {
     @Persisted(primaryKey: true) var id = ""
 }
 
+#if DEBUG
 private actor RealmOpenBarrier {
     nonisolated let publicationObserved = XCTestExpectation(description: "Realm open reached publication")
     nonisolated let joinObserved = XCTestExpectation(description: "Caller joined pending open")
@@ -129,6 +130,8 @@ private actor RealmOpenBarrier {
 
     func count(_ event: RealmCacheOpenEvent) -> Int { eventCounts[event, default: 0] }
 }
+
+#endif
 
 private extension RealmBackgroundActor {
     // Read values on the owning actor; tests never carry a live Realm through Task results.
@@ -192,6 +195,7 @@ final class RealmSwiftGapsTests: XCTestCase {
         }
     }
 
+#if DEBUG
     func test_suspendedExistingFileOpen_rejectsReplacementForOwnerAndWaiter() async throws {
         let configurations = try diskConfigurations()
         let fixtureActor = RealmBackgroundActor()
@@ -257,6 +261,8 @@ final class RealmSwiftGapsTests: XCTestCase {
         XCTAssertEqual(cacheCount, 0)
     }
 
+#endif
+
     func test_defaultOpener_rejectsReplacementAcrossSuspendedCacheLookup() async throws {
         let configurations = try diskConfigurations()
         let fixtureActor = RealmBackgroundActor()
@@ -276,6 +282,7 @@ final class RealmSwiftGapsTests: XCTestCase {
         XCTAssertEqual(successorIdentifiers, ["replacement"])
     }
 
+#if DEBUG
     func test_missingFileCreation_coalescesWaiterAfterFileAppears() async throws {
         let configurations = try diskConfigurations()
         let barrier = RealmOpenBarrier()
@@ -325,6 +332,8 @@ final class RealmSwiftGapsTests: XCTestCase {
             // Expected: a completed Task result cannot bypass scoped eviction.
         }
     }
+
+#endif
 
     func test_scopedEviction_preservesActiveWriteTransaction() async throws {
         var configuration = Realm.Configuration()
