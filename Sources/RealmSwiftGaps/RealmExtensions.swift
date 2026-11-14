@@ -1,5 +1,6 @@
 import SwiftUI
 import RealmSwift
+import Realm.Private
 
 //// From https://www.mongodb.com/docs/realm/sdk/swift/crud/threading/#std-label-ios-async-write
 //public extension Realm {
@@ -22,74 +23,106 @@ import RealmSwift
 //}
 
 public extension Realm {
+    /// A non-suspending boundary that requires its own transaction. Reject a
+    /// busy Realm before the SDK can raise an uncatchable Objective-C exception.
+    /// Use asyncWritePreservingOwnership when the caller can await admission.
+    @discardableResult
+    func writeIfAvailable<T>(_ block: () throws -> T) throws -> T {
+        guard !isInWriteTransaction else {
+            throw RealmWriteOwnershipError.transactionAlreadyOpen
+        }
+        let execution = try RealmWriteExecutionProtection.acquireSynchronousLease()
+        defer { execution?.release() }
+        try execution?.checkpoint()
+        beginWrite()
+        let admittedVersion = ObjectiveCSupport.convert(object: freeze())
+        func stillOwnsOpenWrite() -> Bool {
+            isInWriteTransaction
+                && ObjectiveCSupport.convert(object: freeze()) === admittedVersion
+        }
+        do {
+            try execution?.checkpoint()
+            let result = try block()
+            // Realm.write settles whichever transaction is open after its
+            // body. A notification may have opened a successor during a
+            // manual commit, so settle only the version admitted here.
+            if stillOwnsOpenWrite() {
+                try execution?.checkpoint()
+                try commitWrite()
+            }
+            return result
+        } catch {
+            if stillOwnsOpenWrite() { cancelWrite() }
+            throw error
+        }
+    }
+
     @discardableResult
     func writeIfNeeded<T>(_ block: () throws -> T) throws -> T {
         if isInWriteTransaction {
             return try block()
         }
-        return try write(block)
+        return try writeIfAvailable(block)
     }
 
-    static func writeAsync<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) {
+    static func writeAsync<T: ThreadConfined>(_ passedObject: T, configuration: Realm.Configuration, block: @escaping ((Realm, T) throws -> Void)) {
         let ref = ThreadSafeReference(to: passedObject)
         Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                guard let object = realm.resolve(ref) else { return }
-                try realm.writeIfNeeded {
-                    block(realm, object)
+                try await realm.asyncWritePreservingOwnership {
+                    guard let object = realm.resolve(ref) else { return }
+                    try block(realm, object)
                 }
             }
         }
     }
     
-    static func writeAsync(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) {
+    static func writeAsync(configuration: Realm.Configuration, block: @escaping ((Realm) throws -> Void)) {
         Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try realm.writeIfNeeded {
-                    block(realm)
+                try await realm.asyncWritePreservingOwnership {
+                    try block(realm)
                 }
             }
         }
     }
     
     @_unsafeInheritExecutor
-    static func asyncWrite(configuration: Realm.Configuration, block: @escaping ((Realm) -> Void)) async throws {
+    static func asyncWrite(configuration: Realm.Configuration, block: @escaping ((Realm) throws -> Void)) async throws {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                try realm.writeIfNeeded {
-                    block(realm)
+                try await realm.asyncWritePreservingOwnership {
+                    try block(realm)
                 }
             }
         }()
     }
     
     @_unsafeInheritExecutor
-    static func asyncWrite<T: ThreadConfined>(_ passedObject: ThreadSafeReference<T>, configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) async throws {
+    static func asyncWrite<T: ThreadConfined>(_ passedObject: ThreadSafeReference<T>, configuration: Realm.Configuration, block: @escaping ((Realm, T) throws -> Void)) async throws {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                guard let object = realm.resolve(passedObject) else { return }
-                try realm.writeIfNeeded {
-                    block(realm, object)
+                try await realm.asyncWritePreservingOwnership {
+                    guard let object = realm.resolve(passedObject) else { return }
+                    try block(realm, object)
                 }
             }
         }()
     }
     
     @_unsafeInheritExecutor
-    static func asyncWrite<T: ThreadConfined>(_ passedObjects: [ThreadSafeReference<T>], configuration: Realm.Configuration, block: @escaping ((Realm, T) -> Void)) async throws {
+    static func asyncWrite<T: ThreadConfined>(_ passedObjects: [ThreadSafeReference<T>], configuration: Realm.Configuration, block: @escaping ((Realm, T) throws -> Void)) async throws {
         try await { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration) 
-                let objects: [T] = passedObjects.compactMap {
-                    realm.resolve($0)
-                }
-                try realm.writeIfNeeded {
-                    for object in objects {
-                        block(realm, object)
+                try await realm.asyncWritePreservingOwnership {
+                    for reference in passedObjects {
+                        guard let object = realm.resolve(reference) else { continue }
+                        try block(realm, object)
                     }
                 }
             }

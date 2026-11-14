@@ -9,6 +9,8 @@ public enum RealmBackgroundActorError: Error {
     case realmFileChangedDuringOpen
 }
 
+
+#if DEBUG
 // Instance-scoped suspension points for deterministic cache lifecycle tests.
 enum RealmCacheOpenEvent: Hashable, Sendable {
     case openedBeforePublication
@@ -16,17 +18,27 @@ enum RealmCacheOpenEvent: Hashable, Sendable {
     case waiterResolvedPendingOpen
 }
 
+// Captured-admission tests suspend after the real open, before its identity is
+// handed to a mutation or another actor. Production installs no observation.
+enum RealmStorageAdmissionObservation {
+    @TaskLocal static var didOpenRealm: (@Sendable () async -> Void)? = nil
+}
+
+#endif
+
 @globalActor
 public actor RealmBackgroundActor: CachedRealmsActor {
     public static let shared = RealmBackgroundActor()
 
     public init() { }
 
+#if DEBUG
     init(openObserver: @escaping @Sendable (RealmCacheOpenEvent) async -> Void) {
         self.openObserver = openObserver
     }
 
     private var openObserver: (@Sendable (RealmCacheOpenEvent) async -> Void)?
+#endif
     
     public var cachedRealms = [String: RealmSwift.Realm]()
     // Realm's async actor-bound initializer suspends while the file/group is
@@ -61,13 +73,17 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         )
         if let pendingOpen = pendingRealmOpens[key]
             ?? pendingRealmOpens[pendingKey] {
+#if DEBUG
             if let openObserver {
                 await openObserver(.joinedPendingOpen)
             }
+#endif
             let openedKey = try await pendingOpen.value
+#if DEBUG
             if let openObserver {
                 await openObserver(.waiterResolvedPendingOpen)
             }
+#endif
             return try realmForCompletedOpen(key: openedKey, configuration: configuration)
         }
 
@@ -79,10 +95,12 @@ public actor RealmBackgroundActor: CachedRealmsActor {
         // Publish on the owning actor. A completed Task retains only a key,
         // never a live Realm that can outlast eviction or file replacement.
         let pendingOpen = Task { () throws -> String in
-            let realm = try await RealmSwift.Realm(configuration: configuration, actor: self)
+            let realm = try await RealmWriteExecutionProtection.openRealm(configuration: configuration, actor: self)
+#if DEBUG
             if let openObserver {
                 await openObserver(.openedBeforePublication)
             }
+#endif
             // First creation changes the identity, but an existing file must
             // still match the identity captured before the suspended open.
             let openedKey = realmCacheKey(for: configuration)
@@ -99,6 +117,33 @@ public actor RealmBackgroundActor: CachedRealmsActor {
 
         let openedKey = try await pendingOpen.value
         return try realmForCompletedOpen(key: openedKey, configuration: configuration)
+    }
+
+    public func cachedRealm(
+        for configuration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission
+    ) async throws -> Realm {
+        try Task.checkCancellation()
+        try storageAdmission.admitCreation(configuration: configuration) {
+            realmCacheKey(for: configuration)
+        }
+        let realm = try await cachedRealm(for: configuration)
+#if DEBUG
+        if let didOpenRealm = RealmStorageAdmissionObservation.didOpenRealm { await didOpenRealm() }
+#endif
+        guard storageAdmission.matchesCurrentStorageIdentity({ realmCacheKey(for: configuration) }) else {
+            throw RealmBackgroundActorError.realmFileChangedDuringOpen
+        }
+        return realm
+    }
+
+    /// Read actors may prepare the captured store without receiving a Realm
+    /// belonging to this writer actor. They open their own instance afterward.
+    public func prepareStorage(
+        for configuration: Realm.Configuration,
+        storageAdmission: RealmStorageAdmission
+    ) async throws {
+        _ = try await cachedRealm(for: configuration, storageAdmission: storageAdmission)
     }
 
     private func realmForCompletedOpen(key: String, configuration: Realm.Configuration) throws -> Realm {
@@ -139,16 +184,19 @@ public actor RealmBackgroundActor: CachedRealmsActor {
     
     public func write(configuration: Realm.Configuration, operation: @escaping (Realm) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
-        try realm.writeIfNeeded {
-            try operation(realm)
-        }
+        try await write(in: realm, operation: operation)
     }
-    
+
+    func write(in realm: Realm, operation: (Realm) throws -> Void) async throws {
+        try await realm.asyncWritePreservingOwnership { try operation(realm) }
+    }
+
     public func write<T: ThreadConfined>(_ reference: ThreadSafeReference<T>, configuration: Realm.Configuration, operation: @escaping (Realm, T) throws -> Void) async throws {
         let realm = try await cachedRealm(for: configuration)
-        guard let resolvedObject = realm.resolve(reference) else { throw RealmBackgroundActorError.unableToResolveObject }
-        
-        try realm.writeIfNeeded {
+        try await write(in: realm) { realm in
+            guard let resolvedObject = realm.resolve(reference) else {
+                throw RealmBackgroundActorError.unableToResolveObject
+            }
             try operation(realm, resolvedObject)
         }
     }

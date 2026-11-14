@@ -13,7 +13,11 @@ let package = Package(
             targets: ["RealmSwiftGaps"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.5"),
+        // The owned-write bridge relies on Realm.Private begin tickets and
+        // frozen-version identity reviewed against this exact SDK. Requalify
+        // those contracts before advancing Realm; consumer lockfiles alone
+        // cannot constrain fresh package resolutions.
+        .package(url: "https://github.com/realm/realm-swift.git", exact: "20.0.5"),
     ],
     targets: [
         .target(
